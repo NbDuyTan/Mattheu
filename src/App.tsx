@@ -6,7 +6,14 @@ export default function App() {
   const [members, setMembers] = useState(["Tân", "A Đạo", "Phương", "Phúc"]);
   const [defaultPayer, setDefaultPayer] = useState("Tân");
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState({ desc: '', amount: '', payer: '', split: [] as string[] });
+  const [editForm, setEditForm] = useState({ 
+    desc: '', 
+    amount: '', 
+    payer: '', 
+    split: [] as string[],
+    isCustom: false,
+    customAmounts: {} as Record<string, string>
+  });
   const [title, setTitle] = useState("Bảng thu chi tiêu nhà Lazaro");
 
   const todayDate = () => {
@@ -18,9 +25,9 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState(getMonthStr(todayDate()));
 
   const [expenses, setExpenses] = useState([
-    { id: 1, date: '2024-06-25', desc: 'Bánh mì', amount: 60000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"] },
-    { id: 2, date: '2024-06-25', desc: 'Cafe Bảo Lộc', amount: 98000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"] },
-    { id: 3, date: '2024-06-26', desc: 'Strongbow + Gửi xe (A Đạo)', amount: 100000, payer: 'A Đạo', split: ["Tân", "A Đạo", "Phương", "Phúc"] }
+    { id: 1, date: '2024-06-25', desc: 'Bánh mì', amount: 60000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null },
+    { id: 2, date: '2024-06-25', desc: 'Cafe Bảo Lộc', amount: 98000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null },
+    { id: 3, date: '2024-06-26', desc: 'Strongbow + Gửi xe (A Đạo)', amount: 100000, payer: 'A Đạo', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null }
   ]);
 
   const [newExp, setNewExp] = useState({
@@ -28,7 +35,9 @@ export default function App() {
     desc: '',
     amount: '',
     payer: defaultPayer,
-    split: members
+    split: members,
+    isCustom: false,
+    customAmounts: {} as Record<string, string>
   });
 
   // Sync state when members change
@@ -91,28 +100,91 @@ export default function App() {
 
   const handleAddExpense = (e) => {
     e.preventDefault();
-    if (!newExp.desc || !newExp.amount || parseFloat(newExp.amount) <= 0 || newExp.split.length === 0) return;
+    const totalAmount = parseFloat(newExp.amount);
+    if (!newExp.desc || !newExp.amount || totalAmount <= 0) return;
+
+    let finalShares: Record<string, number> | null = null;
+    let finalSplit = newExp.split;
+
+    if (newExp.isCustom) {
+      finalShares = {};
+      let customSum = 0;
+      members.forEach(m => {
+        const val = parseFloat(newExp.customAmounts[m] || "0");
+        if (val > 0) {
+          finalShares![m] = val;
+          customSum += val;
+        }
+      });
+      
+      if (customSum === 0) return;
+      // Actual split members are those with > 0 shares
+      finalSplit = Object.keys(finalShares);
+      
+      // Basic validation: if sum doesn't match total, we adjust the total to match the sum of shares
+      // or we can just use the sum as the actual bill amount. Let's stick to the sum.
+      if (customSum !== totalAmount) {
+        // Optional: show warning or auto-adjust total
+      }
+    } else {
+      if (newExp.split.length === 0) return;
+    }
 
     const expense = {
       ...newExp,
       id: Date.now(),
-      amount: parseFloat(newExp.amount)
+      amount: newExp.isCustom ? Object.values(finalShares!).reduce((a, b) => a + b, 0) : totalAmount,
+      split: finalSplit,
+      shares: finalShares
     };
 
     setExpenses([...expenses, expense]);
     setSelectedMonth(getMonthStr(newExp.date));
-    setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members });
+    setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {} });
   };
 
   const startEditing = (exp) => {
     setEditingId(exp.id);
-    setEditForm({ desc: exp.desc, amount: exp.amount.toString(), payer: exp.payer, split: exp.split });
+    const customAmts: Record<string, string> = {};
+    if (exp.shares) {
+      Object.entries(exp.shares).forEach(([m, val]) => {
+        customAmts[m] = val.toString();
+      });
+    }
+    setEditForm({ 
+      desc: exp.desc, 
+      amount: exp.amount.toString(), 
+      payer: exp.payer, 
+      split: exp.split,
+      isCustom: !!exp.shares,
+      customAmounts: customAmts
+    });
   };
 
   const handleSaveEdit = (id) => {
+    const totalAmount = parseFloat(editForm.amount);
+    let finalShares: Record<string, number> | null = null;
+    let finalSplit = editForm.split;
+
+    if (editForm.isCustom) {
+      finalShares = {};
+      members.forEach(m => {
+        const val = parseFloat(editForm.customAmounts[m] || "0");
+        if (val > 0) finalShares![m] = val;
+      });
+      finalSplit = Object.keys(finalShares);
+    }
+
     setExpenses(expenses.map(exp => 
       exp.id === id 
-        ? { ...exp, desc: editForm.desc, amount: parseFloat(editForm.amount), payer: editForm.payer, split: editForm.split }
+        ? { 
+            ...exp, 
+            desc: editForm.desc, 
+            amount: editForm.isCustom ? Object.values(finalShares!).reduce((a, b) => a + b, 0) : totalAmount, 
+            payer: editForm.payer, 
+            split: finalSplit,
+            shares: finalShares
+          }
         : exp
     ));
     setEditingId(null);
@@ -142,10 +214,17 @@ export default function App() {
 
     filteredExpenses.forEach(exp => {
       if (bals[exp.payer]) bals[exp.payer].paid += exp.amount;
-      const splitAmount = exp.amount / exp.split.length;
-      exp.split.forEach(m => {
-        if (bals[m]) bals[m].consumed += splitAmount;
-      });
+      
+      if (exp.shares) {
+        Object.entries(exp.shares).forEach(([m, amt]) => {
+          if (bals[m]) bals[m].consumed += amt;
+        });
+      } else {
+        const splitAmount = exp.amount / (exp.split.length || 1);
+        exp.split.forEach(m => {
+          if (bals[m]) bals[m].consumed += splitAmount;
+        });
+      }
     });
 
     members.forEach(m => {
@@ -161,8 +240,13 @@ export default function App() {
     csv += "Ngày,Nội dung,Tổng tiền," + members.join(",") + "\n";
     
     filteredExpenses.forEach(exp => {
-      const share = exp.amount / exp.split.length;
-      const memberShares = members.map(m => exp.split.includes(m) ? share : 0);
+      let memberShares = [];
+      if (exp.shares) {
+        memberShares = members.map(m => exp.shares[m] || 0);
+      } else {
+        const share = exp.amount / (exp.split.length || 1);
+        memberShares = members.map(m => exp.split.includes(m) ? share : 0);
+      }
       csv += `${exp.date},"${exp.desc}",${exp.amount},` + memberShares.join(",") + "\n";
     });
 
@@ -285,27 +369,77 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-3">
-                  <label className="text-xs font-bold text-slate-400 uppercase ml-1 block">Chia cho những ai?</label>
-                  <div className="flex flex-wrap gap-2">
-                    {members.map(m => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => toggleSplitNew(m)}
-                        className={`text-xs px-4 py-2 rounded-full border-2 transition-all font-extrabold ${newExp.split.includes(m) ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100' : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'}`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                    <button 
-                      type="button" 
-                      onClick={() => setNewExp(prev => ({ ...prev, split: members }))}
-                      className="text-xs px-4 py-2 rounded-full border-2 border-dashed border-slate-200 text-slate-400 font-bold hover:border-slate-300"
-                    >
-                      Tất cả
-                    </button>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-400 uppercase ml-1 block">Chia tiền như thế nào?</label>
+                    <div className="flex bg-slate-100 p-1 rounded-xl">
+                       <button 
+                         type="button"
+                         onClick={() => setNewExp({...newExp, isCustom: false})}
+                         className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${!newExp.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                       >
+                         Chia đều
+                       </button>
+                       <button 
+                         type="button"
+                         onClick={() => setNewExp({...newExp, isCustom: true})}
+                         className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${newExp.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                       >
+                         Tùy chỉnh
+                       </button>
+                    </div>
                   </div>
+
+                  {!newExp.isCustom ? (
+                    <div className="flex flex-wrap gap-2">
+                      {members.map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => toggleSplitNew(m)}
+                          className={`text-xs px-4 py-2 rounded-full border-2 transition-all font-extrabold ${newExp.split.includes(m) ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100' : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'}`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                      <button 
+                        type="button" 
+                        onClick={() => setNewExp(prev => ({ ...prev, split: members }))}
+                        className="text-xs px-4 py-2 rounded-full border-2 border-dashed border-slate-200 text-slate-400 font-bold hover:border-slate-300"
+                      >
+                        Tất cả
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                       {members.map(m => (
+                         <div key={m} className="flex flex-col gap-1.5 bg-slate-50 p-3 rounded-2xl border border-slate-100">
+                            <span className="text-[10px] font-black text-slate-500 uppercase">{m}</span>
+                            <div className="relative">
+                               <input 
+                                 type="number"
+                                 placeholder="0"
+                                 value={newExp.customAmounts[m] || ''}
+                                 onChange={e => setNewExp({
+                                   ...newExp,
+                                   customAmounts: { ...newExp.customAmounts, [m]: e.target.value }
+                                 })}
+                                 className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 pr-8"
+                               />
+                               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-300">đ</span>
+                            </div>
+                         </div>
+                       ))}
+                    </div>
+                  )}
+                  {newExp.isCustom && (
+                    <div className="flex justify-between items-center px-2 py-1">
+                       <span className="text-[10px] font-black text-slate-400 uppercase">Tổng chia: {formatMoney(Object.values(newExp.customAmounts).reduce((a, b) => a + (parseFloat(b) || 0), 0))}</span>
+                       {Math.abs(Object.values(newExp.customAmounts).reduce((a, b) => a + (parseFloat(b) || 0), 0) - (parseFloat(newExp.amount) || 0)) > 1 && (
+                         <span className="text-[10px] font-bold text-rose-500 italic">Chưa khớp với tổng tiền ({formatMoney(parseFloat(newExp.amount) || 0)})</span>
+                       )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex justify-end pt-2">
@@ -329,13 +463,14 @@ export default function App() {
                       {members.map(m => (
                         <th key={m} className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">{m}</th>
                       ))}
-                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Xóa</th>
+                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     <AnimatePresence mode="popLayout">
                       {filteredExpenses.map((exp) => {
                         const share = exp.amount / exp.split.length;
+                        const isEditing = editingId === exp.id;
                         return (
                           <motion.tr 
                             layout
@@ -343,30 +478,172 @@ export default function App() {
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0, x: -20 }}
                             key={exp.id} 
-                            className="group hover:bg-slate-50/50 transition-all font-medium"
+                            className={`group transition-all font-medium ${isEditing ? 'bg-blue-50/30' : 'hover:bg-slate-50/50'}`}
                           >
                             <td className="py-4 px-6 text-slate-400 text-xs font-bold">
                                {exp.date.split('-').slice(2).join('/')}/{exp.date.split('-')[1]}
                             </td>
                             <td className="py-4 px-6">
-                               <div className="flex flex-col gap-0.5">
-                                  <span className="text-slate-900 font-bold">{exp.desc}</span>
-                                  <span className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">Trả bởi {exp.payer}</span>
-                               </div>
+                               {isEditing ? (
+                                 <div className="space-y-4">
+                                   <div className="space-y-1">
+                                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nội dung</span>
+                                      <input 
+                                        value={editForm.desc}
+                                        onChange={e => setEditForm({...editForm, desc: e.target.value})}
+                                        className="w-full bg-white border border-blue-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                                        placeholder="Mô tả..."
+                                      />
+                                   </div>
+                                   <div className="flex items-center justify-between">
+                                      <div className="space-y-1 flex-1 mr-4">
+                                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Người trả</span>
+                                         <select 
+                                           value={editForm.payer}
+                                           onChange={e => setEditForm({...editForm, payer: e.target.value})}
+                                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none cursor-pointer"
+                                         >
+                                           {members.map(m => <option key={m} value={m}>{m}</option>)}
+                                         </select>
+                                      </div>
+                                      <div className="mt-5">
+                                         <div className="flex bg-slate-100 p-1 rounded-xl">
+                                            <button 
+                                              type="button"
+                                              onClick={() => setEditForm({...editForm, isCustom: false})}
+                                              className={`px-3 py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${!editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
+                                            >
+                                              Đều
+                                            </button>
+                                            <button 
+                                              type="button"
+                                              onClick={() => setEditForm({...editForm, isCustom: true})}
+                                              className={`px-3 py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
+                                            >
+                                              Tùy chỉnh
+                                            </button>
+                                         </div>
+                                      </div>
+                                   </div>
+                                   {!editForm.isCustom && (
+                                     <div className="space-y-1">
+                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia cho</span>
+                                        <div className="flex flex-wrap gap-1">
+                                          {members.map(m => (
+                                            <button
+                                              key={m}
+                                              type="button"
+                                              onClick={() => toggleSplitEdit(m)}
+                                              className={`text-[9px] px-2 py-1 rounded-lg border-2 transition-all font-black ${editForm.split.includes(m) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-300 border-slate-100'}`}
+                                            >
+                                              {m}
+                                            </button>
+                                          ))}
+                                        </div>
+                                     </div>
+                                   )}
+                                 </div>
+                               ) : (
+                                 <div className="flex flex-col gap-0.5">
+                                    <span className="text-slate-900 font-bold">{exp.desc}</span>
+                                    <div className="flex items-center gap-2">
+                                       <span className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">Trả bởi {exp.payer}</span>
+                                       {exp.shares ? (
+                                         <span className="text-[10px] text-emerald-500 font-black tracking-tighter bg-emerald-50 px-1 rounded">CHIA TÙY CHỈNH</span>
+                                       ) : exp.split.length < members.length && (
+                                         <span className="text-[10px] text-blue-500 font-black tracking-tighter bg-blue-50 px-1 rounded">CHIA {exp.split.length} TV</span>
+                                       )}
+                                    </div>
+                                 </div>
+                               )}
                             </td>
-                            <td className="py-4 px-6 text-right font-black text-slate-900">{formatNumber(exp.amount)}</td>
+                            <td className="py-4 px-6 text-right font-black text-slate-900">
+                               {isEditing ? (
+                                 <input 
+                                   type="number"
+                                   value={editForm.amount}
+                                   onChange={e => setEditForm({...editForm, amount: e.target.value})}
+                                   className="w-24 bg-white border border-blue-200 rounded-xl px-3 py-2 text-sm text-right outline-none focus:ring-2 focus:ring-blue-500 font-black"
+                                 />
+                               ) : (
+                                 formatNumber(exp.amount)
+                               )}
+                            </td>
                             {members.map(m => (
-                              <td key={m} className={`py-4 px-6 text-center ${exp.split.includes(m) ? 'text-blue-600 font-black' : 'text-slate-200'}`}>
-                                {exp.split.includes(m) ? formatNumber(share) : "-"}
+                              <td 
+                                key={m} 
+                                onClick={() => isEditing && !editForm.isCustom && toggleSplitEdit(m)}
+                                className={`py-4 px-6 text-center transition-all ${isEditing ? 'cursor-pointer hover:bg-slate-50' : ''} ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'text-blue-600 font-black' : 'text-slate-200'}`}
+                              >
+                                {isEditing ? (
+                                   <div className={`w-full h-full flex items-center justify-center`}>
+                                      {editForm.isCustom ? (
+                                        <div className="relative">
+                                           <input 
+                                             type="number"
+                                             value={editForm.customAmounts[m] || ''}
+                                             onChange={e => setEditForm({
+                                               ...editForm,
+                                               customAmounts: { ...editForm.customAmounts, [m]: e.target.value }
+                                             })}
+                                             className="w-20 bg-white border border-blue-100 rounded-lg px-2 py-1 text-[10px] font-black outline-none focus:ring-1 focus:ring-blue-500 text-right pr-5"
+                                           />
+                                           <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-slate-300 font-bold">đ</span>
+                                        </div>
+                                      ) : (
+                                        editForm.split.includes(m) ? (
+                                          <div className="flex flex-col items-center">
+                                            <Check size={14} className="text-emerald-500 mb-1" />
+                                            <span className="text-[10px] text-blue-600 font-black">{formatNumber(parseFloat(editForm.amount) / (editForm.split.length || 1))}</span>
+                                          </div>
+                                        ) : (
+                                          <X size={14} className="text-slate-200" />
+                                        )
+                                      )}
+                                   </div>
+                                ) : (
+                                   (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? formatNumber(exp.shares ? exp.shares[m] : share) : "-"
+                                )}
                               </td>
                             ))}
                             <td className="py-4 px-6 text-center">
-                               <button 
-                                  onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
-                                  className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all cursor-pointer opacity-0 group-hover:opacity-100"
-                               >
-                                  <Trash2 size={16} />
-                               </button>
+                               <div className="flex items-center justify-center gap-1">
+                                  {isEditing ? (
+                                    <>
+                                      <button 
+                                        onClick={() => handleSaveEdit(exp.id)}
+                                        className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-xl transition-all cursor-pointer"
+                                        title="Lưu"
+                                      >
+                                        <Check size={18} />
+                                      </button>
+                                      <button 
+                                        onClick={() => setEditingId(null)}
+                                        className="text-slate-400 hover:bg-slate-100 p-2 rounded-xl transition-all cursor-pointer"
+                                        title="Hủy"
+                                      >
+                                        <X size={18} />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button 
+                                        onClick={() => startEditing(exp)}
+                                        className="text-slate-300 hover:text-blue-600 p-2 rounded-xl hover:bg-blue-50 transition-all cursor-pointer md:opacity-0 group-hover:opacity-100"
+                                        title="Sửa"
+                                      >
+                                        <Pencil size={16} />
+                                      </button>
+                                      <button 
+                                        onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
+                                        className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all cursor-pointer md:opacity-0 group-hover:opacity-100"
+                                        title="Xóa"
+                                      >
+                                        <Trash2 size={16} />
+                                      </button>
+                                    </>
+                                  )}
+                               </div>
                             </td>
                           </motion.tr>
                         )
@@ -392,6 +669,7 @@ export default function App() {
                <AnimatePresence mode="popLayout">
                   {filteredExpenses.map((exp) => {
                     const share = exp.amount / exp.split.length;
+                    const isEditing = editingId === exp.id;
                     return (
                       <motion.div 
                         layout
@@ -399,35 +677,129 @@ export default function App() {
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.95 }}
                         key={exp.id} 
-                        className="bg-white p-6 rounded-[32px] shadow-sm border border-slate-200 relative"
+                        className={`bg-white p-6 rounded-[32px] shadow-sm border transition-all relative ${isEditing ? 'border-blue-400 ring-4 ring-blue-50' : 'border-slate-200'}`}
                       >
-                         <button 
-                            onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
-                            className="absolute top-4 right-4 text-slate-300 p-2 cursor-pointer"
-                         >
-                            <Trash2 size={16} />
-                         </button>
+                         <div className="absolute top-4 right-4 flex items-center gap-1">
+                            {isEditing ? (
+                              <>
+                                <button 
+                                  onClick={() => handleSaveEdit(exp.id)}
+                                  className="text-emerald-500 p-2 bg-emerald-50 rounded-xl cursor-pointer"
+                                >
+                                  <Check size={18} />
+                                </button>
+                                <button 
+                                  onClick={() => setEditingId(null)}
+                                  className="text-slate-400 p-2 bg-slate-50 rounded-xl cursor-pointer"
+                                >
+                                  <X size={18} />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button 
+                                  onClick={() => startEditing(exp)}
+                                  className="text-slate-300 p-2 hover:text-blue-600 transition-all cursor-pointer"
+                                >
+                                  <Pencil size={16} />
+                                </button>
+                                <button 
+                                  onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
+                                  className="text-slate-300 p-2 hover:text-red-500 transition-all cursor-pointer"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </>
+                            )}
+                         </div>
                          <div className="flex flex-col gap-6">
                             <div className="flex justify-between items-start pt-1">
-                               <div>
-                                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{exp.date.split('-').reverse().join('/')}</div>
-                                  <div className="text-xl font-black text-slate-900 leading-tight">{exp.desc}</div>
-                                  <div className="flex items-center gap-2 mt-2">
-                                     <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black uppercase">{exp.payer} chi</span>
-                                  </div>
-                               </div>
-                               <div className="text-2xl font-black text-slate-900">{formatMoney(exp.amount)}</div>
+                               {isEditing ? (
+                                 <div className="space-y-4 w-full mr-12">
+                                    <div className="space-y-1">
+                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nội dung</span>
+                                       <input 
+                                         value={editForm.desc}
+                                         onChange={e => setEditForm({...editForm, desc: e.target.value})}
+                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                                       />
+                                    </div>
+                                    <div className="space-y-1">
+                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Người trả</span>
+                                       <select 
+                                         value={editForm.payer}
+                                         onChange={e => setEditForm({...editForm, payer: e.target.value})}
+                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                                       >
+                                         {members.map(m => <option key={m} value={m}>{m}</option>)}
+                                       </select>
+                                    </div>
+                                    <div className="space-y-1">
+                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Số tiền</span>
+                                       <input 
+                                         type="number"
+                                         value={editForm.amount}
+                                         onChange={e => setEditForm({...editForm, amount: e.target.value})}
+                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-lg font-black outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                                       />
+                                    </div>
+                                 </div>
+                               ) : (
+                                 <div>
+                                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{exp.date.split('-').reverse().join('/')}</div>
+                                    <div className="text-xl font-black text-slate-900 leading-tight">{exp.desc}</div>
+                                    <div className="flex items-center gap-2 mt-2">
+                                       <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black uppercase">{exp.payer} chi</span>
+                                    </div>
+                                 </div>
+                               )}
+                               {!isEditing && <div className="text-2xl font-black text-slate-900">{formatMoney(exp.amount)}</div>}
                             </div>
-                            <div className="grid grid-cols-2 gap-2 pt-4 border-t border-slate-50">
-                               {members.map(m => (
-                                  <div 
-                                    key={m} 
-                                    className={`px-3 py-2 rounded-2xl text-[10px] font-black flex justify-between items-center ${exp.split.includes(m) ? 'bg-slate-50 text-slate-900 border-2 border-slate-100' : 'text-slate-200 border-2 border-transparent'}`}
-                                  >
-                                    <span>{m}</span>
-                                    {exp.split.includes(m) && <span className="text-blue-600">{formatMoney(share)}</span>}
-                                  </div>
-                               ))}
+                            
+                             <div className="space-y-3 pt-4 border-t border-slate-50">
+                               <div className="flex items-center justify-between">
+                                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia sẻ cho:</div>
+                                  {isEditing && (
+                                     <div className="flex bg-slate-100 p-0.5 rounded-lg">
+                                        <button 
+                                          type="button" 
+                                          onClick={() => setEditForm({...editForm, isCustom: false})}
+                                          className={`px-2 py-1 text-[8px] font-black uppercase rounded ${!editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
+                                        >Đều</button>
+                                        <button 
+                                          type="button" 
+                                          onClick={() => setEditForm({...editForm, isCustom: true})}
+                                          className={`px-2 py-1 text-[8px] font-black uppercase rounded ${editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
+                                        >Tùy chỉnh</button>
+                                     </div>
+                                  )}
+                               </div>
+                               <div className="grid grid-cols-2 gap-2">
+                                  {members.map(m => (
+                                     <div key={m} className="relative">
+                                        <button 
+                                          disabled={!isEditing || editForm.isCustom}
+                                          onClick={() => toggleSplitEdit(m)}
+                                          className={`w-full px-3 py-2 rounded-2xl text-[10px] font-black flex justify-between items-center transition-all ${isEditing ? (editForm.isCustom ? 'bg-white border-2 border-slate-100' : editForm.split.includes(m) ? 'bg-blue-600 text-white border-2 border-blue-600' : 'bg-slate-50 text-slate-300 border-2 border-transparent') : (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'bg-slate-50 text-slate-900 border-2 border-slate-100' : 'text-slate-200 border-2 border-slate-50/50'}`}
+                                        >
+                                          <span>{m}</span>
+                                          {!isEditing && (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) && (
+                                            <span className="text-blue-600">{formatMoney(exp.shares ? exp.shares[m] : share)}</span>
+                                          )}
+                                          {isEditing && !editForm.isCustom && editForm.split.includes(m) && <Check size={12} />}
+                                        </button>
+                                        {isEditing && editForm.isCustom && (
+                                          <input 
+                                            type="number"
+                                            value={editForm.customAmounts[m] || ''}
+                                            onChange={e => setEditForm({...editForm, customAmounts: {...editForm.customAmounts, [m]: e.target.value}})}
+                                            className="absolute inset-0 bg-transparent text-right px-3 py-2 text-[10px] font-black outline-none"
+                                            placeholder="0"
+                                          />
+                                        )}
+                                     </div>
+                                  ))}
+                               </div>
                             </div>
                          </div>
                       </motion.div>
