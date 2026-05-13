@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "Expense": {
+      "title": "Expense",
+      "description": "A single expense record",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "description": "ISO date string YYYY-MM-DD" },
+        "desc": { "type": "string", "description": "Description of the expense" },
+        "amount": { "type": "number", "description": "Total amount" },
+        "payer": { "type": "string", "description": "Name of the person who paid" },
+        "split": { "type": "array", "items": { "type": "string" }, "description": "Names of people sharing the cost" },
+        "shares": { "type": "object", "description": "Optional custom amounts for each person", "additionalProperties": { "type": "number" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "desc", "amount", "payer", "split"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global settings for the expense tracker",
+      "type": "object",
+      "properties": {
+        "members": { "type": "array", "items": { "type": "string" } },
+        "title": { "type": "string" },
+        "defaultPayer": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "expenses": {
+      "schema": "Expense",
+      "description": "Collection of expenses"
+    },
+    "settings/house": {
+      "schema": "AppSettings",
+      "description": "Global house settings"
+    }
+  }
+}

@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 3. Primitive Definitions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. Validation Blueprints
+    function isValidExpense(data, isCreate) {
+      return data.keys().hasAll(['date', 'desc', 'amount', 'payer', 'split', 'createdAt', 'updatedAt'])
+        && data.keys().size() <= 8
+        && data.date is string && data.date.size() <= 20
+        && data.desc is string && data.desc.size() <= 500
+        && data.amount is number && data.amount > 0
+        && data.payer is string && data.payer.size() <= 100
+        && data.split is list && data.split.size() > 0 && data.split.size() <= 50
+        && (data.get('shares', null) == null || data.shares is map)
+        && (isCreate ? data.createdAt == request.time : data.createdAt == existing().createdAt)
+        && data.updatedAt == request.time;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['members', 'title', 'defaultPayer', 'updatedAt'])
+        && data.keys().size() <= 4
+        && data.members is list && data.members.size() > 0 && data.members.size() <= 50
+        && data.title is string && data.title.size() <= 200
+        && data.defaultPayer is string && data.defaultPayer.size() <= 100
+        && data.updatedAt == request.time;
+    }
+
+    // 4. Match Blocks
+    match /expenses/{expenseId} {
+      allow get: if isSignedIn();
+      // 8. Secure List Queries
+      allow list: if isSignedIn(); 
+      
+      allow create: if isSignedIn() && isValidExpense(incoming(), true);
+      
+      allow update: if isSignedIn() && isValidExpense(incoming(), false)
+        && (
+          // Action: Edit record
+          incoming().diff(existing()).affectedKeys().hasAny(['date', 'desc', 'amount', 'payer', 'split', 'shares', 'updatedAt'])
+        );
+        
+      allow delete: if isSignedIn();
+    }
+
+    match /settings/house {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidSettings(incoming());
+      allow update: if isSignedIn() && isValidSettings(incoming());
+    }
+  }
+}

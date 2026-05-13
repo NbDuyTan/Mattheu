@@ -1,11 +1,67 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, Trash2, Download, Receipt, Users, Calculator, ArrowRight, UserCog, Pencil, Check, X, UserPlus, UserMinus, Calendar, ChevronRight, Wallet } from 'lucide-react';
+import { Plus, Trash2, Download, Receipt, Users, Calculator, ArrowRight, UserCog, Pencil, Check, X, UserPlus, UserMinus, Calendar, ChevronRight, Wallet, LogIn, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  db, 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  onAuthStateChanged, 
+  collection, 
+  doc, 
+  onSnapshot, 
+  addDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  getDoc,
+  User
+} from './firebase';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export default function App() {
-  const [members, setMembers] = useState(["Tân", "A Đạo", "Phương", "Phúc"]);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [members, setMembers] = useState<string[]>(["Tân", "A Đạo", "Phương", "Phúc"]);
   const [defaultPayer, setDefaultPayer] = useState("Tân");
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ 
     desc: '', 
     amount: '', 
@@ -24,11 +80,65 @@ export default function App() {
   const getMonthStr = (date: string) => date.split('-').slice(0, 2).join('-');
   const [selectedMonth, setSelectedMonth] = useState(getMonthStr(todayDate()));
 
-  const [expenses, setExpenses] = useState([
-    { id: 1, date: '2024-06-25', desc: 'Bánh mì', amount: 60000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null },
-    { id: 2, date: '2024-06-25', desc: 'Cafe Bảo Lộc', amount: 98000, payer: 'Tân', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null },
-    { id: 3, date: '2024-06-26', desc: 'Strongbow + Gửi xe (A Đạo)', amount: 100000, payer: 'A Đạo', split: ["Tân", "A Đạo", "Phương", "Phúc"], shares: null as Record<string, number> | null }
-  ]);
+  const [expenses, setExpenses] = useState<{id: string, date: string, desc: string, amount: number, payer: string, split: string[], shares: Record<string, number> | null}[]>([]);
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  // Settings Listener
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(doc(db, 'settings', 'house'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.members) setMembers(data.members);
+        if (data.title) setTitle(data.title);
+        if (data.defaultPayer) setDefaultPayer(data.defaultPayer);
+      } else {
+        // Init settings if not exists
+        setDoc(doc(db, 'settings', 'house'), {
+          members: ["Tân", "A Đạo", "Phương", "Phúc"],
+          title: "Bảng thu chi tiêu nhà Lazaro",
+          defaultPayer: "Tân",
+          updatedAt: serverTimestamp()
+        }).catch(err => handleFirestoreError(err, OperationType.WRITE, 'settings/house'));
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/house'));
+    return unsub;
+  }, [user]);
+
+  // Expenses Listener
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'expenses'), orderBy('date', 'desc'));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const exps = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as any[];
+      setExpenses(exps);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'expenses'));
+    return unsub;
+  }, [user]);
+
+  // Sync Settings to DB
+  const updateSettings = async (updates: any) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'settings', 'house'), {
+        ...updates,
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'settings/house');
+    }
+  };
 
   const [newExp, setNewExp] = useState({
     date: todayDate(),
@@ -57,37 +167,29 @@ export default function App() {
       .sort((a, b) => b.id - a.id); // Show latest first
   }, [expenses, selectedMonth]);
 
-  const handleAddMember = () => {
+  const handleAddMember = async () => {
     const name = `TV${members.length + 1}`;
-    setMembers([...members, name]);
+    await updateSettings({ members: [...members, name] });
   };
 
-  const handleRemoveMember = (name: string) => {
+  const handleRemoveMember = async (name: string) => {
     if (members.length <= 1) return;
-    setMembers(members.filter(m => m !== name));
-    setExpenses(expenses.map(exp => ({
-      ...exp,
-      split: exp.split.filter(m => m !== name),
-      payer: exp.payer === name ? (members.find(m => m !== name) || "") : exp.payer
-    })));
+    await updateSettings({ members: members.filter(m => m !== name) });
+    // Note: We don't bulk update expenses here as it's expensive in Firestore, 
+    // instead the UI handles missing members gracefully.
   };
 
-  const handleNameChange = (index, newName) => {
+  const handleNameChange = async (index, newName) => {
     if (!newName.trim()) return;
     const oldName = members[index];
     if (oldName === newName) return;
 
     const newMembers = [...members];
     newMembers[index] = newName;
-    setMembers(newMembers);
-
-    if (defaultPayer === oldName) setDefaultPayer(newName);
-
-    setExpenses(expenses.map(exp => ({
-      ...exp,
-      payer: exp.payer === oldName ? newName : exp.payer,
-      split: exp.split.map(m => m === oldName ? newName : m)
-    })));
+    await updateSettings({ 
+      members: newMembers,
+      defaultPayer: defaultPayer === oldName ? newName : defaultPayer
+    });
   };
 
   const formatNumber = (num: number) => {
@@ -98,8 +200,9 @@ export default function App() {
     return formatNumber(amount) + 'đ';
   };
 
-  const handleAddExpense = (e) => {
+  const handleAddExpense = async (e) => {
     e.preventDefault();
+    if (!user) return;
     const totalAmount = parseFloat(newExp.amount);
     if (!newExp.desc || !newExp.amount || totalAmount <= 0) return;
 
@@ -118,29 +221,28 @@ export default function App() {
       });
       
       if (customSum === 0) return;
-      // Actual split members are those with > 0 shares
       finalSplit = Object.keys(finalShares);
-      
-      // Basic validation: if sum doesn't match total, we adjust the total to match the sum of shares
-      // or we can just use the sum as the actual bill amount. Let's stick to the sum.
-      if (customSum !== totalAmount) {
-        // Optional: show warning or auto-adjust total
-      }
     } else {
       if (newExp.split.length === 0) return;
     }
 
-    const expense = {
-      ...newExp,
-      id: Date.now(),
-      amount: newExp.isCustom ? Object.values(finalShares!).reduce((a, b) => a + b, 0) : totalAmount,
-      split: finalSplit,
-      shares: finalShares
-    };
-
-    setExpenses([...expenses, expense]);
-    setSelectedMonth(getMonthStr(newExp.date));
-    setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {} });
+    try {
+      await addDoc(collection(db, 'expenses'), {
+        date: newExp.date,
+        desc: newExp.desc,
+        amount: newExp.isCustom ? Object.values(finalShares!).reduce((a, b) => a + b, 0) : totalAmount,
+        payer: newExp.payer,
+        split: finalSplit,
+        shares: finalShares,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      
+      setSelectedMonth(getMonthStr(newExp.date));
+      setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {} });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'expenses');
+    }
   };
 
   const startEditing = (exp) => {
@@ -161,7 +263,8 @@ export default function App() {
     });
   };
 
-  const handleSaveEdit = (id) => {
+  const handleSaveEdit = async (id: string) => {
+    if (!user) return;
     const totalAmount = parseFloat(editForm.amount);
     let finalShares: Record<string, number> | null = null;
     let finalSplit = editForm.split;
@@ -175,19 +278,28 @@ export default function App() {
       finalSplit = Object.keys(finalShares);
     }
 
-    setExpenses(expenses.map(exp => 
-      exp.id === id 
-        ? { 
-            ...exp, 
-            desc: editForm.desc, 
-            amount: editForm.isCustom ? Object.values(finalShares!).reduce((a, b) => a + b, 0) : totalAmount, 
-            payer: editForm.payer, 
-            split: finalSplit,
-            shares: finalShares
-          }
-        : exp
-    ));
-    setEditingId(null);
+    try {
+      await updateDoc(doc(db, 'expenses', id), {
+        desc: editForm.desc,
+        amount: editForm.isCustom ? Object.values(finalShares!).reduce((a: number, b: number) => a + b, 0) : totalAmount,
+        payer: editForm.payer,
+        split: finalSplit,
+        shares: finalShares,
+        updatedAt: serverTimestamp()
+      });
+      setEditingId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `expenses/${id}`);
+    }
+  };
+
+  const handleDeleteExpense = async (id: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'expenses', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `expenses/${id}`);
+    }
   };
 
   const toggleSplitNew = (member: string) => {
@@ -217,7 +329,7 @@ export default function App() {
       
       if (exp.shares) {
         Object.entries(exp.shares).forEach(([m, amt]) => {
-          if (bals[m]) bals[m].consumed += amt;
+          if (bals[m]) bals[m].consumed += (amt as number);
         });
       } else {
         const splitAmount = exp.amount / (exp.split.length || 1);
@@ -261,6 +373,44 @@ export default function App() {
 
   const totalMonthlySpend = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Đang tải dữ liệu...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md w-full bg-white rounded-[40px] p-10 shadow-2xl shadow-blue-100 border border-slate-100 text-center space-y-8"
+        >
+          <div className="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center mx-auto shadow-xl shadow-blue-200">
+            <Wallet size={40} className="text-white" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">Lazaro Home</h1>
+            <p className="text-slate-500 font-medium leading-relaxed">Vui lòng đăng nhập để quản lý chi tiêu trong gia đình</p>
+          </div>
+          <button 
+            onClick={() => signInWithPopup(auth, googleProvider)}
+            className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
+          >
+            <LogIn size={20} />
+            ĐĂNG NHẬP VỚI GOOGLE
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 md:p-8 p-4 font-sans selection:bg-blue-100">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -268,11 +418,20 @@ export default function App() {
         {/* Header Section */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-1">
-            <input 
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0 w-full"
-            />
+            <div className="flex items-center gap-3">
+               <input 
+                 value={title}
+                 onChange={(e) => updateSettings({ title: e.target.value })}
+                 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0"
+               />
+               <button 
+                 onClick={() => auth.signOut()}
+                 className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
+                 title="Đăng xuất"
+               >
+                 <LogOut size={18} />
+               </button>
+            </div>
             <p className="text-slate-500 font-medium flex items-center gap-2">
               <Calendar size={16} />
               Quản lý chi tiêu nhà Lazaro theo từng tháng
@@ -309,19 +468,19 @@ export default function App() {
               <div className="text-3xl font-black text-slate-900">{formatMoney(totalMonthlySpend)}</div>
            </div>
            
-           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Thủ quỹ</span>
-                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><UserCog size={20} /></div>
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Thủ quỹ</span>
+                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><UserCog size={20} /></div>
+                </div>
+                <select 
+                  value={defaultPayer} 
+                  onChange={e => updateSettings({ defaultPayer: e.target.value })}
+                  className="text-lg font-bold text-slate-900 bg-transparent outline-none cursor-pointer w-full"
+                >
+                  {members.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
               </div>
-              <select 
-                value={defaultPayer} 
-                onChange={e => setDefaultPayer(e.target.value)}
-                className="text-lg font-bold text-slate-900 bg-transparent outline-none cursor-pointer w-full"
-              >
-                {members.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-           </div>
 
 
         </div>
@@ -434,8 +593,8 @@ export default function App() {
                   )}
                   {newExp.isCustom && (
                     <div className="flex justify-between items-center px-2 py-1">
-                       <span className="text-[10px] font-black text-slate-400 uppercase">Tổng chia: {formatMoney(Object.values(newExp.customAmounts).reduce((a, b) => a + (parseFloat(b) || 0), 0))}</span>
-                       {Math.abs(Object.values(newExp.customAmounts).reduce((a, b) => a + (parseFloat(b) || 0), 0) - (parseFloat(newExp.amount) || 0)) > 1 && (
+                       <span className="text-[10px] font-black text-slate-400 uppercase">Tổng chia: {formatMoney((Object.values(newExp.customAmounts) as string[]).reduce((a: number, b: string) => a + (parseFloat(b) || 0), 0))}</span>
+                       {Math.abs((Object.values(newExp.customAmounts) as string[]).reduce((a: number, b: string) => a + (parseFloat(b) || 0), 0) - (parseFloat(newExp.amount) || 0)) > 1 && (
                          <span className="text-[10px] font-bold text-rose-500 italic">Chưa khớp với tổng tiền ({formatMoney(parseFloat(newExp.amount) || 0)})</span>
                        )}
                     </div>
@@ -635,7 +794,7 @@ export default function App() {
                                         <Pencil size={16} />
                                       </button>
                                       <button 
-                                        onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
+                                        onClick={() => handleDeleteExpense(exp.id)}
                                         className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all cursor-pointer md:opacity-0 group-hover:opacity-100"
                                         title="Xóa"
                                       >
@@ -704,7 +863,7 @@ export default function App() {
                                   <Pencil size={16} />
                                 </button>
                                 <button 
-                                  onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))}
+                                  onClick={() => handleDeleteExpense(exp.id)}
                                   className="text-slate-300 p-2 hover:text-red-500 transition-all cursor-pointer"
                                 >
                                   <Trash2 size={16} />
