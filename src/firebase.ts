@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User, signInAnonymously } from 'firebase/auth';
 import { 
   getFirestore, 
   collection, 
@@ -13,12 +13,13 @@ import {
   orderBy, 
   serverTimestamp,
   getDocFromServer,
-  getDoc
+  getDoc,
+  getDocs
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
@@ -34,20 +35,12 @@ export {
   orderBy, 
   serverTimestamp,
   signInWithPopup,
+  signInAnonymously,
   onAuthStateChanged,
   getDocFromServer,
-  getDoc
+  getDoc,
+  getDocs
 };
 export type { User };
 
-// Test connection
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error: any) {
-    if (error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-testConnection();
+// No connection test needed here as it's handled in App.tsx components

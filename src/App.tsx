@@ -6,6 +6,7 @@ import {
   auth, 
   googleProvider, 
   signInWithPopup, 
+  signInAnonymously,
   onAuthStateChanged, 
   collection, 
   doc, 
@@ -53,15 +54,47 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  // Don't throw for every error in the UI, just log it for debugging
+  // unless it's a critical write failure.
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isUnlocked, setIsUnlocked] = useState(() => localStorage.getItem('lazaro_unlocked') === 'true');
+  const [passcode, setPasscode] = useState("tan.2001");
+  const [enteredCode, setEnteredCode] = useState("");
   const [members, setMembers] = useState<string[]>(["Tân", "A Đạo", "Phương", "Phúc"]);
   const [defaultPayer, setDefaultPayer] = useState("Tân");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+
+  const handleError = (error: unknown, operationType: OperationType, path: string | null) => {
+    const errMessage = error instanceof Error ? error.message : String(error);
+    const errInfo: FirestoreErrorInfo = {
+      error: errMessage,
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+      },
+      operationType,
+      path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    
+    let userFriendlyMsg = "Có lỗi xảy ra khi thao tác với dữ liệu.";
+    if (errMessage.includes("permission-denied") || errMessage.includes("insufficient permissions")) {
+      userFriendlyMsg = `Lỗi phân quyền: Bạn không có quyền ${operationType} tại ${path}. Hãy kiểm tra lại Security Rules trong Firebase Console cho Database tương ứng.`;
+    } else if (errMessage.includes("offline")) {
+      userFriendlyMsg = "Mất kết nối mạng. Vui lòng kiểm tra lại.";
+    }
+    
+    setGlobalError(userFriendlyMsg);
+  };
+
   const [editForm, setEditForm] = useState({ 
     desc: '', 
     amount: '', 
@@ -84,8 +117,24 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        // Auto sign-in anonymously to access settings/passcode
+        try {
+          const cred = await signInAnonymously(auth);
+          setUser(cred.user);
+          setAuthErrorCode(null);
+        } catch (err: any) {
+          if (err.code === 'auth/admin-restricted-operation') {
+            setAuthErrorCode('ANONYMOUS_AUTH_DISABLED');
+          } else {
+            console.error("Auth error:", err.message);
+          }
+        }
+      } else {
+        setUser(u);
+        setAuthErrorCode(null);
+      }
       setLoading(false);
     });
     return unsubscribe;
@@ -100,22 +149,24 @@ export default function App() {
         if (data.members) setMembers(data.members);
         if (data.title) setTitle(data.title);
         if (data.defaultPayer) setDefaultPayer(data.defaultPayer);
+        if (data.passcode) setPasscode(data.passcode);
       } else {
         // Init settings if not exists
         setDoc(doc(db, 'settings', 'house'), {
           members: ["Tân", "A Đạo", "Phương", "Phúc"],
           title: "Bảng thu chi tiêu nhà Lazaro",
           defaultPayer: "Tân",
+          passcode: "tan.2001",
           updatedAt: serverTimestamp()
-        }).catch(err => handleFirestoreError(err, OperationType.WRITE, 'settings/house'));
+        }).catch(err => handleError(err, OperationType.WRITE, 'settings/house'));
       }
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/house'));
+    }, (err) => handleError(err, OperationType.GET, 'settings/house'));
     return unsub;
   }, [user]);
 
   // Expenses Listener
   useEffect(() => {
-    if (!user) return;
+    if (!user || !isUnlocked) return;
     const q = query(collection(db, 'expenses'), orderBy('date', 'desc'));
     const unsub = onSnapshot(q, (snapshot) => {
       const exps = snapshot.docs.map(d => ({
@@ -123,9 +174,26 @@ export default function App() {
         ...d.data()
       })) as any[];
       setExpenses(exps);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'expenses'));
+    }, (err) => handleError(err, OperationType.LIST, 'expenses'));
     return unsub;
-  }, [user]);
+  }, [user, isUnlocked]);
+
+  const handleUnlock = () => {
+    if (enteredCode === passcode) {
+      setIsUnlocked(true);
+      localStorage.setItem('lazaro_unlocked', 'true');
+      setError(null);
+      setGlobalError(null);
+    } else {
+      setError("Mã không chính xác!");
+    }
+  };
+
+  const handleLogout = () => {
+    setIsUnlocked(false);
+    localStorage.removeItem('lazaro_unlocked');
+    auth.signOut();
+  };
 
   // Sync Settings to DB
   const updateSettings = async (updates: any) => {
@@ -136,7 +204,7 @@ export default function App() {
         updatedAt: serverTimestamp()
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/house');
+      handleError(err, OperationType.UPDATE, 'settings/house');
     }
   };
 
@@ -164,7 +232,7 @@ export default function App() {
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter(exp => getMonthStr(exp.date) === selectedMonth)
-      .sort((a, b) => b.id - a.id); // Show latest first
+      .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)); 
   }, [expenses, selectedMonth]);
 
   const handleAddMember = async () => {
@@ -204,7 +272,10 @@ export default function App() {
     e.preventDefault();
     if (!user) return;
     const totalAmount = parseFloat(newExp.amount);
-    if (!newExp.desc || !newExp.amount || totalAmount <= 0) return;
+    if (!newExp.desc || !newExp.amount || totalAmount <= 0) {
+      setGlobalError("Vui lòng nhập đầy đủ mô tả và số tiền hợp lệ (> 0).");
+      return;
+    }
 
     let finalShares: Record<string, number> | null = null;
     let finalSplit = newExp.split;
@@ -220,10 +291,16 @@ export default function App() {
         }
       });
       
-      if (customSum === 0) return;
+      if (customSum === 0) {
+        setGlobalError("Vui lòng nhập số tiền cho ít nhất một thành viên khi chọn Tùy chỉnh.");
+        return;
+      }
       finalSplit = Object.keys(finalShares);
     } else {
-      if (newExp.split.length === 0) return;
+      if (newExp.split.length === 0) {
+        setGlobalError("Vui lòng chọn ít nhất một thành viên để chia tiền.");
+        return;
+      }
     }
 
     try {
@@ -241,7 +318,7 @@ export default function App() {
       setSelectedMonth(getMonthStr(newExp.date));
       setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {} });
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'expenses');
+      handleError(err, OperationType.CREATE, 'expenses');
     }
   };
 
@@ -289,7 +366,7 @@ export default function App() {
       });
       setEditingId(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `expenses/${id}`);
+      handleError(err, OperationType.UPDATE, `expenses/${id}`);
     }
   };
 
@@ -298,7 +375,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'expenses', id));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `expenses/${id}`);
+      handleError(err, OperationType.DELETE, `expenses/${id}`);
     }
   };
 
@@ -384,7 +461,58 @@ export default function App() {
     );
   }
 
-  if (!user) {
+  // Show auth error screen if anonymous auth is required but disabled
+  if (!user && authErrorCode === 'ANONYMOUS_AUTH_DISABLED') {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md w-full bg-white rounded-[40px] p-10 shadow-2xl shadow-blue-100 border border-slate-100 text-center space-y-8"
+        >
+          <div className="w-20 h-20 bg-amber-100 rounded-3xl flex items-center justify-center mx-auto">
+            <UserPlus size={40} className="text-amber-600" />
+          </div>
+          <div className="space-y-4">
+            <h1 className="text-2xl font-black text-slate-900">Cấu hình Firebase</h1>
+            <p className="text-slate-500 font-medium leading-relaxed">
+              Ứng dụng yêu cầu bật <b>Anonymous Auth</b> để hoạt động mà không cần đăng nhập Google.
+            </p>
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-left space-y-4">
+                <p className="text-[13px] text-amber-700 leading-relaxed font-semibold">
+                  Hãy vào Firebase Console, bật <b>Anonymous</b> trong phần Authentication/Sign-in method, sau đó quay lại đây.
+                </p>
+                <div className="flex flex-col gap-2 pt-2">
+                  <a 
+                    href="https://console.firebase.google.com/project/united-mantis-f8gvj/authentication/providers" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="block w-full bg-amber-500 text-white py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-600 transition-all shadow-md"
+                  >
+                    Mở Firebase Console
+                  </a>
+                  <button 
+                    onClick={() => window.location.reload()}
+                    className="block w-full bg-white text-amber-600 border border-amber-200 py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-50 transition-all"
+                  >
+                    Đã bật? Thử lại ngay
+                  </button>
+                </div>
+            </div>
+            <button 
+               onClick={() => signInWithPopup(auth, googleProvider)}
+               className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
+            >
+               <LogIn size={20} />
+               HOẶC ĐĂNG NHẬP GOOGLE
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
         <motion.div 
@@ -397,15 +525,80 @@ export default function App() {
           </div>
           <div className="space-y-2">
             <h1 className="text-3xl font-black text-slate-900 tracking-tight">Lazaro Home</h1>
-            <p className="text-slate-500 font-medium leading-relaxed">Vui lòng đăng nhập để quản lý chi tiêu trong gia đình</p>
+            <p className="text-slate-500 font-medium leading-relaxed">Vui lòng nhập mã để truy cập bảng chi tiêu</p>
           </div>
-          <button 
-            onClick={() => signInWithPopup(auth, googleProvider)}
-            className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
-          >
-            <LogIn size={20} />
-            ĐĂNG NHẬP VỚI GOOGLE
-          </button>
+          
+          <div className="space-y-4">
+            {authErrorCode === 'ANONYMOUS_AUTH_DISABLED' ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-left space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-amber-100 text-amber-600 rounded-lg">
+                    <UserPlus size={18} />
+                  </div>
+                  <p className="text-xs font-black text-amber-800 uppercase tracking-widest">Cần bật Anonymous Auth</p>
+                </div>
+                <p className="text-[13px] text-amber-700 leading-relaxed font-semibold">
+                  Tính năng đăng nhập bằng mã yêu cầu bật <b>Anonymous Auth</b> trong Firebase Console. 
+                  Hãy nhấn nút bên dưới, bật <b>Anonymous</b> và lưu lại, sau đó thử lại.
+                </p>
+                <div className="flex flex-col gap-2 pt-2">
+                  <a 
+                    href="https://console.firebase.google.com/project/united-mantis-f8gvj/authentication/providers" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="block w-full bg-amber-500 text-white py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-600 transition-all shadow-md"
+                  >
+                    Bật Anonymous Auth
+                  </a>
+                  <button 
+                    onClick={() => {
+                      setLoading(true);
+                      setAuthErrorCode(null);
+                      // Trigger re-render of effect
+                      window.location.reload();
+                    }}
+                    className="block w-full bg-white text-amber-600 border border-amber-200 py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-50 transition-all"
+                  >
+                    Đã bật? Thử lại ngay
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <input 
+                  type="text"
+                  placeholder="Nhập mã truy cập..."
+                  value={enteredCode}
+                  onChange={(e) => setEnteredCode(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-center text-xl font-black focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-inner"
+                />
+                {error && (
+                  <motion.p 
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-rose-500 text-xs font-black uppercase tracking-widest"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+                <button 
+                  onClick={handleUnlock}
+                  className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
+                >
+                  <LogIn size={20} />
+                  XÁC NHẬN TRUY CẬP
+                </button>
+              </>
+            )}
+            
+            <button 
+               onClick={() => signInWithPopup(auth, googleProvider)}
+               className="text-[10px] font-black text-slate-300 uppercase tracking-widest hover:text-slate-400 transition-all cursor-pointer"
+            >
+               Hoặc đăng nhập với Google
+            </button>
+          </div>
         </motion.div>
       </div>
     );
@@ -415,6 +608,36 @@ export default function App() {
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 md:p-8 p-4 font-sans selection:bg-blue-100">
       <div className="max-w-7xl mx-auto space-y-8">
         
+        {/* Global Error Display */}
+        <AnimatePresence>
+          {globalError && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-rose-100 text-rose-600 rounded-lg">
+                    <X size={18} />
+                  </div>
+                  <div className="flex flex-col">
+                    <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest leading-none mb-1">Lỗi hệ thống</p>
+                    <p className="text-sm font-bold text-rose-700">{globalError}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setGlobalError(null)}
+                  className="p-2 text-rose-300 hover:text-rose-500 transition-all cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Header Section */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-1">
@@ -425,9 +648,9 @@ export default function App() {
                  className="text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0"
                />
                <button 
-                 onClick={() => auth.signOut()}
+                 onClick={handleLogout}
                  className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
-                 title="Đăng xuất"
+                 title="Thoát"
                >
                  <LogOut size={18} />
                </button>
@@ -602,9 +825,12 @@ export default function App() {
                 </div>
 
                 <div className="flex justify-end pt-2">
-                  <button type="submit" className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-2xl font-black transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-200 cursor-pointer active:scale-95 leading-none">
-                    <Plus size={20} />
-                    <span>THÊM KHOẢN CHI</span>
+                  <button 
+                    type="submit" 
+                    className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white px-10 py-5 rounded-[24px] font-black tracking-tight transition-all flex items-center justify-center gap-3 shadow-xl shadow-blue-200 border-b-4 border-blue-800 active:border-b-0 active:translate-y-[2px] cursor-pointer group"
+                  >
+                    <Plus size={24} className="group-hover:rotate-90 transition-transform duration-300" />
+                    <span className="text-lg">THÊM KHOẢN CHI</span>
                   </button>
                 </div>
               </form>
@@ -1000,6 +1226,22 @@ export default function App() {
                        </button>
                     </div>
                   ))}
+               </div>
+
+               <div className="pt-6 border-t border-slate-50 space-y-3">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-1">Mã truy cập (Passcode)</label>
+                  <div className="relative">
+                    <input 
+                      type="text"
+                      value={passcode}
+                      onChange={e => updateSettings({ passcode: e.target.value })}
+                      className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm"
+                    />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                      <Check size={14} />
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-400 italic px-1">Mã này dùng để mọi người cùng đăng nhập (ví dụ: tan.2001)</p>
                </div>
             </div>
 
