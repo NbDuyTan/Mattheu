@@ -1,10 +1,9 @@
 {
-  "projectId": "united-mantis-f8gvj",
-  "appId": "1:217807625075:web:19ebf155399d17acb7c306",
-  "apiKey": "AIzaSyCLoNRNwIZLFLXFgGGc6Fa6fpbSv7iJbCo",
-  "authDomain": "united-mantis-f8gvj.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-4d433c9d-e3af-48bd-b13b-97652fd4eb0c",
-  "storageBucket": "united-mantis-f8gvj.firebasestorage.app",
-  "messagingSenderId": "217807625075",
-  "measurementId": ""
+  "projectId": "lazaro-home-app",
+  "appId": "1:883236470021:web:92d2d64f211d153de24b6c",
+  "apiKey": "AIzaSyBYv6uHQha4g5j05Qc7MoPgnYf8DBm2mmc",
+  "authDomain": "lazaro-home-app.firebaseapp.com",
+  "storageBucket": "lazaro-home-app.firebasestorage.app",
+  "messagingSenderId": "883236470021",
+  "measurementId": "G-V79QCDVRX0"
 }

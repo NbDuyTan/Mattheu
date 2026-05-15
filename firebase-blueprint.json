@@ -24,12 +24,37 @@
         "members": { "type": "array", "items": { "type": "string" } },
         "title": { "type": "string" },
         "defaultPayer": { "type": "string" },
-        "passcode": { "type": "string", "description": "Shared access code" },
         "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Account": {
+      "title": "Account",
+      "description": "Registered account codes that can be used",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["admin", "member"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Profile": {
+      "title": "Profile",
+      "description": "Maps a Firebase UID to an account code",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "linkedAt": { "type": "string", "format": "date-time" }
       }
     }
   },
   "firestore": {
+    "accounts": {
+      "schema": "Account",
+      "description": "Collection of valid account codes (IDs are the codes themselves like tan.nd.05)"
+    },
+    "profiles": {
+      "schema": "Profile",
+      "description": "Collection of user profiles (IDs are Firebase UIDs)"
+    },
     "expenses": {
       "schema": "Expense",
       "description": "Collection of expenses"

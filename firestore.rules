@@ -23,6 +23,19 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    // New Authorization Helpers
+    function getProfileData() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+    
+    function isMember() {
+      return isSignedIn() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
+    }
+    
+    function isAdmin() {
+      return isMember() && get(/databases/$(database)/documents/accounts/$(getProfileData().code)).data.role == 'admin';
+    }
+
     // 2. Validation Blueprints
     function isValidExpense(data, isCreate) {
       let requiredFields = ['date', 'desc', 'amount', 'payer', 'split', 'createdAt', 'updatedAt'];
@@ -38,7 +51,8 @@ service cloud.firestore {
     }
 
     function isValidSettings(data) {
-      return data.keys().hasAll(['members', 'title', 'defaultPayer', 'passcode', 'updatedAt'])
+      let requiredFields = ['members', 'title', 'defaultPayer', 'passcode', 'updatedAt'];
+      return data.keys().hasAll(requiredFields)
         && data.keys().size() == 5
         && data.members is list && data.members.size() >= 0 && data.members.size() <= 100
         && data.title is string && data.title.size() <= 200
@@ -48,38 +62,47 @@ service cloud.firestore {
     }
 
     // 4. Collection Rules
+    
+    match /accounts/{code} {
+      // Any signed in user can 'get' a single account to check if it exists for login
+      allow get: if isSignedIn();
+      // Only members can list accounts (or see other details)
+      allow list: if isMember();
+      // Admin can manage accounts
+      allow create, update, delete: if isAdmin();
+      // Bootstrapping: Allow the first admin code to be created if it's the known one
+      allow create: if isSignedIn() && code == 'tan.nd.05' && !exists(/databases/$(database)/documents/accounts/tan.nd.05);
+    }
+    
+    match /profiles/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid 
+        && exists(/databases/$(database)/documents/accounts/$(incoming().code));
+    }
+
     match /expenses/{expenseId} {
-      allow read: if isSignedIn();
+      allow read: if isMember();
       
-      allow create: if isSignedIn() 
+      allow create: if isMember() 
         && isValidId(expenseId)
         && isValidExpense(incoming(), true);
         
-      allow update: if isSignedIn()
+      allow update: if isMember()
         && isValidId(expenseId)
         && isValidExpense(incoming(), false)
         && (
-          // Action: Edit Record
           incoming().diff(existing()).affectedKeys().hasOnly(['date', 'desc', 'amount', 'payer', 'split', 'shares', 'updatedAt'])
         );
         
-      allow delete: if isSignedIn() && isValidId(expenseId);
+      allow delete: if isMember() && isValidId(expenseId);
     }
 
     match /settings/{settingId} {
-      allow read: if isSignedIn();
+      allow read: if isMember();
       
-      allow create: if isSignedIn()
+      allow write: if isAdmin()
         && isValidId(settingId)
         && isValidSettings(incoming());
-        
-      allow update: if isSignedIn()
-        && isValidId(settingId)
-        && isValidSettings(incoming())
-        && (
-          // Action: Update Settings
-          incoming().diff(existing()).affectedKeys().hasOnly(['members', 'title', 'defaultPayer', 'passcode', 'updatedAt'])
-        );
     }
   }
 }

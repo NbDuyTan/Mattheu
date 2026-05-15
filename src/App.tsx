@@ -61,15 +61,20 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isUnlocked, setIsUnlocked] = useState(() => localStorage.getItem('lazaro_unlocked') === 'true');
-  const [passcode, setPasscode] = useState("tan.2001");
+  const [accountCode, setAccountCode] = useState<string | null>(() => localStorage.getItem('lazaro_account_code'));
+  const [userRole, setUserRole] = useState<'admin' | 'member' | null>(null);
   const [enteredCode, setEnteredCode] = useState("");
   const [members, setMembers] = useState<string[]>(["Tân", "A Đạo", "Phương", "Phúc"]);
+  const [passcode, setPasscode] = useState("tan.2001");
   const [defaultPayer, setDefaultPayer] = useState("Tân");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [allAccounts, setAllAccounts] = useState<{id: string, role: string}[]>([]);
+
+  const isAdmin = userRole === 'admin';
 
   const handleError = (error: unknown, operationType: OperationType, path: string | null) => {
     const errMessage = error instanceof Error ? error.message : String(error);
@@ -87,7 +92,7 @@ export default function App() {
     
     let userFriendlyMsg = "Có lỗi xảy ra khi thao tác với dữ liệu.";
     if (errMessage.includes("permission-denied") || errMessage.includes("insufficient permissions")) {
-      userFriendlyMsg = `Lỗi phân quyền: Bạn không có quyền ${operationType} tại ${path}. Hãy kiểm tra lại Security Rules trong Firebase Console cho Database tương ứng.`;
+      userFriendlyMsg = `Lỗi phân quyền: Bạn không có quyền ${operationType} tại ${path}.`;
     } else if (errMessage.includes("offline")) {
       userFriendlyMsg = "Mất kết nối mạng. Vui lòng kiểm tra lại.";
     }
@@ -118,31 +123,61 @@ export default function App() {
   // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      setLoading(true);
       if (!u) {
-        // Auto sign-in anonymously to access settings/passcode
         try {
           const cred = await signInAnonymously(auth);
           setUser(cred.user);
-          setAuthErrorCode(null);
         } catch (err: any) {
           if (err.code === 'auth/admin-restricted-operation') {
             setAuthErrorCode('ANONYMOUS_AUTH_DISABLED');
-          } else {
-            console.error("Auth error:", err.message);
           }
+          console.error("Auth error:", err.message);
+          setLoading(false);
         }
       } else {
         setUser(u);
-        setAuthErrorCode(null);
+        // Check profile to load role and account code
+        try {
+          const profileSnap = await getDoc(doc(db, 'profiles', u.uid));
+          if (profileSnap.exists()) {
+            const code = profileSnap.data().code;
+            setAccountCode(code);
+            localStorage.setItem('lazaro_account_code', code);
+            
+            // Get role
+            const accountSnap = await getDoc(doc(db, 'accounts', code));
+            if (accountSnap.exists()) {
+              setUserRole(accountSnap.data().role);
+            }
+          }
+        } catch (err) {
+          console.error("Error loading account profile:", err);
+        }
+        setLoading(false);
       }
-      setLoading(false);
     });
     return unsubscribe;
   }, []);
 
+  // All Accounts Listener (Admin Only)
+  useEffect(() => {
+    if (!isAdmin) {
+      setAllAccounts([]);
+      return;
+    }
+    const unsub = onSnapshot(collection(db, 'accounts'), (snapshot) => {
+      setAllAccounts(snapshot.docs.map(d => ({ 
+        id: d.id, 
+        role: d.data().role 
+      })));
+    }, (err) => handleError(err, OperationType.LIST, 'accounts'));
+    return unsub;
+  }, [isAdmin]);
+
   // Settings Listener
   useEffect(() => {
-    if (!user) return;
+    if (!user || !accountCode) return;
     const unsub = onSnapshot(doc(db, 'settings', 'house'), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
@@ -151,22 +186,24 @@ export default function App() {
         if (data.defaultPayer) setDefaultPayer(data.defaultPayer);
         if (data.passcode) setPasscode(data.passcode);
       } else {
-        // Init settings if not exists
-        setDoc(doc(db, 'settings', 'house'), {
-          members: ["Tân", "A Đạo", "Phương", "Phúc"],
-          title: "Bảng thu chi tiêu nhà Lazaro",
-          defaultPayer: "Tân",
-          passcode: "tan.2001",
-          updatedAt: serverTimestamp()
-        }).catch(err => handleError(err, OperationType.WRITE, 'settings/house'));
+        // Init settings if not exists (only if admin)
+        if (isAdmin) {
+          setDoc(doc(db, 'settings', 'house'), {
+            members: ["Tân", "A Đạo", "Phương", "Phúc"],
+            title: "Bảng thu chi tiêu nhà Lazaro",
+            defaultPayer: "Tân",
+            passcode: "tan.2001",
+            updatedAt: serverTimestamp()
+          }).catch(err => handleError(err, OperationType.WRITE, 'settings/house'));
+        }
       }
     }, (err) => handleError(err, OperationType.GET, 'settings/house'));
     return unsub;
-  }, [user]);
+  }, [user, accountCode, isAdmin]);
 
   // Expenses Listener
   useEffect(() => {
-    if (!user || !isUnlocked) return;
+    if (!user || !accountCode) return;
     const q = query(collection(db, 'expenses'), orderBy('date', 'desc'));
     const unsub = onSnapshot(q, (snapshot) => {
       const exps = snapshot.docs.map(d => ({
@@ -176,28 +213,71 @@ export default function App() {
       setExpenses(exps);
     }, (err) => handleError(err, OperationType.LIST, 'expenses'));
     return unsub;
-  }, [user, isUnlocked]);
+  }, [user, accountCode]);
 
-  const handleUnlock = () => {
-    if (enteredCode === passcode) {
-      setIsUnlocked(true);
-      localStorage.setItem('lazaro_unlocked', 'true');
-      setError(null);
-      setGlobalError(null);
-    } else {
-      setError("Mã không chính xác!");
+  const handleLogin = async () => {
+    if (enteredCode.trim().length === 0 || !user) return;
+    setError(null);
+    setLoading(true);
+    try {
+      let accountSnap = await getDoc(doc(db, 'accounts', enteredCode));
+      
+      // Bootstrap tan.nd.05 if it's the first login with that code
+      if (!accountSnap.exists() && enteredCode === 'tan.nd.05') {
+        await setDoc(doc(db, 'accounts', 'tan.nd.05'), {
+          role: 'admin',
+          createdAt: serverTimestamp()
+        });
+        accountSnap = await getDoc(doc(db, 'accounts', 'tan.nd.05'));
+      }
+
+      if (accountSnap.exists()) {
+        await setDoc(doc(db, 'profiles', user.uid), {
+          code: enteredCode,
+          linkedAt: serverTimestamp()
+        });
+        setAccountCode(enteredCode);
+        setUserRole(accountSnap.data().role);
+        localStorage.setItem('lazaro_account_code', enteredCode);
+        setEnteredCode("");
+      } else {
+        setError("Mã tài khoản không tồn tại!");
+      }
+    } catch (err: any) {
+      setError("Lỗi đăng nhập: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleLogout = () => {
-    setIsUnlocked(false);
-    localStorage.removeItem('lazaro_unlocked');
+    setAccountCode(null);
+    setUserRole(null);
+    localStorage.removeItem('lazaro_account_code');
     auth.signOut();
+  };
+
+  const addAccount = async (code: string, role: 'admin' | 'member' = 'member') => {
+    if (!isAdmin) return;
+    try {
+      await setDoc(doc(db, 'accounts', code), { role, createdAt: serverTimestamp() });
+    } catch (err) {
+      handleError(err, OperationType.WRITE, `accounts/${code}`);
+    }
+  };
+
+  const deleteAccount = async (code: string) => {
+    if (!isAdmin || code === 'tan.nd.05') return;
+    try {
+      await deleteDoc(doc(db, 'accounts', code));
+    } catch (err) {
+      handleError(err, OperationType.DELETE, `accounts/${code}`);
+    }
   };
 
   // Sync Settings to DB
   const updateSettings = async (updates: any) => {
-    if (!user) return;
+    if (!user || !isAdmin) return;
     try {
       await updateDoc(doc(db, 'settings', 'house'), {
         ...updates,
@@ -474,45 +554,63 @@ export default function App() {
             <UserPlus size={40} className="text-amber-600" />
           </div>
           <div className="space-y-4">
-            <h1 className="text-2xl font-black text-slate-900">Cấu hình Firebase</h1>
+            <h1 className="text-2xl font-black text-slate-900">Yêu cầu cấu hình Firebase</h1>
             <p className="text-slate-500 font-medium leading-relaxed">
-              Ứng dụng yêu cầu bật <b>Anonymous Auth</b> để hoạt động mà không cần đăng nhập Google.
+              Hệ thống cần <b>Anonymous Authentication</b> được bật để xác định danh tính bảo mật mà không cần đăng nhập Google.
             </p>
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-left space-y-4">
-                <p className="text-[13px] text-amber-700 leading-relaxed font-semibold">
-                  Hãy vào Firebase Console, bật <b>Anonymous</b> trong phần Authentication/Sign-in method, sau đó quay lại đây.
-                </p>
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Cách khắc phục:</p>
+                  <ol className="text-xs text-amber-800 space-y-2 list-decimal ml-4 font-bold">
+                    <li>Vào mục <b>Authentication</b> trong Firebase Console</li>
+                    <li>Tab <b>Sign-in method</b> {"->"} <b>Add new provider</b></li>
+                    <li>Chọn <b>Anonymous</b> và nhấn <b>Enable</b></li>
+                  </ol>
+                </div>
                 <div className="flex flex-col gap-2 pt-2">
                   <a 
                     href="https://console.firebase.google.com/project/united-mantis-f8gvj/authentication/providers" 
                     target="_blank" 
                     rel="noreferrer"
-                    className="block w-full bg-amber-500 text-white py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-600 transition-all shadow-md"
+                    className="block w-full bg-amber-600 text-white py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-700 transition-all shadow-md"
                   >
                     Mở Firebase Console
                   </a>
                   <button 
                     onClick={() => window.location.reload()}
-                    className="block w-full bg-white text-amber-600 border border-amber-200 py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-50 transition-all"
+                    className="block w-full bg-white text-amber-600 border border-amber-200 py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-50 transition-all cursor-pointer"
                   >
-                    Đã bật? Thử lại ngay
+                    Tôi đã bật, thử lại ngay
                   </button>
                 </div>
             </div>
+            
+            <div className="relative py-4">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-100"></div>
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-white px-4 text-slate-400 font-black tracking-widest">Hoặc</span>
+              </div>
+            </div>
+
             <button 
                onClick={() => signInWithPopup(auth, googleProvider)}
-               className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
+               className="w-full bg-blue-600 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-blue-700 transition-all cursor-pointer shadow-lg shadow-blue-100 active:scale-95"
             >
                <LogIn size={20} />
-               HOẶC ĐĂNG NHẬP GOOGLE
+               ĐĂNG NHẬP VỚI GOOGLE
             </button>
+            <p className="text-[10px] text-slate-400 font-medium italic">
+              Nếu không bật Anonymous Auth, bạn phải dùng Google để định danh.
+            </p>
           </div>
         </motion.div>
       </div>
     );
   }
 
-  if (!isUnlocked) {
+  if (!accountCode) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
         <motion.div 
@@ -525,79 +623,36 @@ export default function App() {
           </div>
           <div className="space-y-2">
             <h1 className="text-3xl font-black text-slate-900 tracking-tight">Lazaro Home</h1>
-            <p className="text-slate-500 font-medium leading-relaxed">Vui lòng nhập mã để truy cập bảng chi tiêu</p>
+            <p className="text-slate-500 font-medium leading-relaxed">Vui lòng nhập mã tài khoản để truy cập</p>
           </div>
           
           <div className="space-y-4">
-            {authErrorCode === 'ANONYMOUS_AUTH_DISABLED' ? (
-              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-left space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-amber-100 text-amber-600 rounded-lg">
-                    <UserPlus size={18} />
-                  </div>
-                  <p className="text-xs font-black text-amber-800 uppercase tracking-widest">Cần bật Anonymous Auth</p>
-                </div>
-                <p className="text-[13px] text-amber-700 leading-relaxed font-semibold">
-                  Tính năng đăng nhập bằng mã yêu cầu bật <b>Anonymous Auth</b> trong Firebase Console. 
-                  Hãy nhấn nút bên dưới, bật <b>Anonymous</b> và lưu lại, sau đó thử lại.
-                </p>
-                <div className="flex flex-col gap-2 pt-2">
-                  <a 
-                    href="https://console.firebase.google.com/project/united-mantis-f8gvj/authentication/providers" 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="block w-full bg-amber-500 text-white py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-600 transition-all shadow-md"
-                  >
-                    Bật Anonymous Auth
-                  </a>
-                  <button 
-                    onClick={() => {
-                      setLoading(true);
-                      setAuthErrorCode(null);
-                      // Trigger re-render of effect
-                      window.location.reload();
-                    }}
-                    className="block w-full bg-white text-amber-600 border border-amber-200 py-3 rounded-xl text-xs font-black text-center uppercase tracking-widest hover:bg-amber-50 transition-all"
-                  >
-                    Đã bật? Thử lại ngay
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <input 
-                  type="text"
-                  placeholder="Nhập mã truy cập..."
-                  value={enteredCode}
-                  onChange={(e) => setEnteredCode(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-center text-xl font-black focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-inner"
-                />
-                {error && (
-                  <motion.p 
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-rose-500 text-xs font-black uppercase tracking-widest"
-                  >
-                    {error}
-                  </motion.p>
-                )}
-                <button 
-                  onClick={handleUnlock}
-                  className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95"
-                >
-                  <LogIn size={20} />
-                  XÁC NHẬN TRUY CẬP
-                </button>
-              </>
+            <input 
+              type="text"
+              placeholder="Nhập mã tài khoản..."
+              value={enteredCode}
+              onChange={(e) => setEnteredCode(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-center text-xl font-black focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-inner"
+            />
+            {error && (
+              <motion.p 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-rose-500 text-xs font-black uppercase tracking-widest"
+              >
+                {error}
+              </motion.p>
             )}
-            
             <button 
-               onClick={() => signInWithPopup(auth, googleProvider)}
-               className="text-[10px] font-black text-slate-300 uppercase tracking-widest hover:text-slate-400 transition-all cursor-pointer"
+              onClick={handleLogin}
+              disabled={loading}
+              className="w-full bg-slate-900 text-white flex items-center justify-center gap-3 py-4 rounded-2xl font-black hover:bg-slate-800 transition-all cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
             >
-               Hoặc đăng nhập với Google
+              <LogIn size={20} />
+              {loading ? "ĐANG ĐĂNG NHẬP..." : "ĐĂNG NHẬP"}
             </button>
+            {/* Instruction removed */}
           </div>
         </motion.div>
       </div>
@@ -644,16 +699,28 @@ export default function App() {
             <div className="flex items-center gap-3">
                <input 
                  value={title}
+                 readOnly={!isAdmin}
                  onChange={(e) => updateSettings({ title: e.target.value })}
-                 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0"
+                 className={`text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0 ${!isAdmin ? 'cursor-default' : ''}`}
                />
-               <button 
-                 onClick={handleLogout}
-                 className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
-                 title="Thoát"
-               >
-                 <LogOut size={18} />
-               </button>
+               <div className="flex items-center gap-1">
+                 {isAdmin && (
+                   <button 
+                     onClick={() => setShowAdminPanel(true)}
+                     className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all cursor-pointer"
+                     title="Quản lý tài khoản"
+                   >
+                     <UserCog size={18} />
+                   </button>
+                 )}
+                 <button 
+                   onClick={handleLogout}
+                   className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
+                   title="Thoát"
+                 >
+                   <LogOut size={18} />
+                 </button>
+               </div>
             </div>
             <p className="text-slate-500 font-medium flex items-center gap-2">
               <Calendar size={16} />
@@ -691,21 +758,20 @@ export default function App() {
               <div className="text-3xl font-black text-slate-900">{formatMoney(totalMonthlySpend)}</div>
            </div>
            
-              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Thủ quỹ</span>
-                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><UserCog size={20} /></div>
-                </div>
-                <select 
-                  value={defaultPayer} 
-                  onChange={e => updateSettings({ defaultPayer: e.target.value })}
-                  className="text-lg font-bold text-slate-900 bg-transparent outline-none cursor-pointer w-full"
-                >
-                  {members.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Thủ quỹ mặc định</span>
+                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Users size={20} /></div>
               </div>
-
-
+              <select 
+                value={defaultPayer} 
+                disabled={!isAdmin}
+                onChange={e => updateSettings({ defaultPayer: e.target.value })}
+                className={`text-lg font-bold text-slate-900 bg-transparent outline-none w-full ${!isAdmin ? 'cursor-default' : 'cursor-pointer'}`}
+              >
+                {members.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+           </div>
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
@@ -1200,6 +1266,83 @@ export default function App() {
                </div>
             )}
 
+            <AnimatePresence>
+              {showAdminPanel && isAdmin && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                    className="w-full max-w-xl bg-white rounded-[40px] shadow-2xl overflow-hidden"
+                  >
+                    <div className="bg-slate-900 p-8 flex items-center justify-between text-white">
+                      <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/40"><Users size={24} /></div>
+                        <div>
+                          <h2 className="text-xl font-black">Quản lý Tài khoản</h2>
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Danh sách mã truy cập</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setShowAdminPanel(false)} className="p-2 hover:bg-slate-800 rounded-xl transition-all">
+                        <X size={24} />
+                      </button>
+                    </div>
+                    
+                    <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto">
+                      <div className="space-y-4">
+                         <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Thêm tài khoản mới</h4>
+                         <div className="flex gap-2">
+                           <input 
+                             id="new-account-code"
+                             placeholder="Mã tài khoản (vd: hung.nd.20)"
+                             className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 font-black outline-none focus:ring-2 focus:ring-blue-500"
+                           />
+                           <button 
+                             onClick={() => {
+                               const el = document.getElementById('new-account-code') as HTMLInputElement;
+                               if (el.value.trim()) {
+                                 addAccount(el.value.trim());
+                                 el.value = "";
+                               }
+                             }}
+                             className="bg-blue-600 text-white px-6 rounded-2xl font-black hover:bg-blue-700 transition-all flex items-center gap-2"
+                           >
+                             <Plus size={20} />
+                             THÊM
+                           </button>
+                         </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tài khoản hiện có</h4>
+                        <div className="divide-y divide-slate-100 border border-slate-100 rounded-3xl overflow-hidden">
+                          {allAccounts.map(acc => (
+                            <div key={acc.id} className="flex items-center justify-between p-4 bg-white hover:bg-slate-50 transition-all">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-2 h-2 rounded-full ${acc.role === 'admin' ? 'bg-rose-500' : 'bg-blue-500'}`}></div>
+                                <span className="font-black text-slate-700">{acc.id}</span>
+                                <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${acc.role === 'admin' ? 'bg-rose-50 text-rose-600' : 'bg-blue-50 text-blue-600'}`}>
+                                  {acc.role === 'admin' ? 'Quản trị' : 'Thành viên'}
+                                </span>
+                              </div>
+                              {acc.id !== 'tan.nd.05' && (
+                                <button 
+                                  onClick={() => deleteAccount(acc.id)}
+                                  className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
           </div>
 
           {/* Right Column: Settings & Settlement */}
@@ -1209,41 +1352,50 @@ export default function App() {
             <div className="bg-white p-7 rounded-[32px] shadow-sm border border-slate-200 space-y-6">
                <div className="flex items-center justify-between">
                   <h3 className="font-black text-slate-900 uppercase text-[10px] tracking-widest">Thành viên nhà</h3>
-                  <button onClick={handleAddMember} className="bg-slate-50 hover:bg-slate-100 p-2.5 rounded-2xl transition-all cursor-pointer">
-                    <UserPlus size={20} className="text-slate-600" />
-                  </button>
+                  {isAdmin && (
+                    <button onClick={handleAddMember} className="bg-slate-50 hover:bg-slate-100 p-2.5 rounded-2xl transition-all cursor-pointer">
+                      <UserPlus size={20} className="text-slate-600" />
+                    </button>
+                  )}
                </div>
                <div className="space-y-3">
                   {members.map((m, idx) => (
                     <div key={idx} className="flex items-center gap-2 group">
                        <input 
                         value={m}
+                        readOnly={!isAdmin}
                         onChange={e => handleNameChange(idx, e.target.value)}
-                        className="bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black w-full focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm"
+                        className={`bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black w-full focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm ${!isAdmin ? 'cursor-default' : ''}`}
                        />
-                       <button onClick={() => handleRemoveMember(m)} className="text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all cursor-pointer p-1">
-                        <UserMinus size={18} />
-                       </button>
+                       {isAdmin && (
+                         <button onClick={() => handleRemoveMember(m)} className="text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all cursor-pointer p-1">
+                          <UserMinus size={18} />
+                         </button>
+                       )}
                     </div>
                   ))}
                </div>
-
-               <div className="pt-6 border-t border-slate-50 space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-1">Mã truy cập (Passcode)</label>
-                  <div className="relative">
-                    <input 
-                      type="text"
-                      value={passcode}
-                      onChange={e => updateSettings({ passcode: e.target.value })}
-                      className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm"
-                    />
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 bg-blue-50 text-blue-600 rounded-lg">
-                      <Check size={14} />
-                    </div>
-                  </div>
-                  <p className="text-[9px] text-slate-400 italic px-1">Mã này dùng để mọi người cùng đăng nhập (ví dụ: tan.2001)</p>
-               </div>
             </div>
+
+            {/* Security Setting (Admin Only) */}
+            {isAdmin && (
+              <div className="bg-white p-7 rounded-[32px] shadow-sm border border-slate-200 space-y-6">
+                 <div className="flex items-center justify-between">
+                    <h3 className="font-black text-slate-900 uppercase text-[10px] tracking-widest">Bảo mật</h3>
+                    <div className="p-2 bg-slate-50 text-slate-400 rounded-xl"><UserCog size={18} /></div>
+                 </div>
+                 <div className="space-y-2">
+                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã xác thực bảng (passcode)</label>
+                   <input 
+                    type="password"
+                    value={passcode}
+                    onChange={e => updateSettings({ passcode: e.target.value })}
+                    className="bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black w-full focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm"
+                    placeholder="Nhập mã mới..."
+                   />
+                 </div>
+              </div>
+            )}
 
             {/* Settlement Summary */}
             <div className="bg-slate-900 text-white rounded-[40px] p-8 shadow-2xl shadow-blue-900/10 space-y-10 relative overflow-hidden">
