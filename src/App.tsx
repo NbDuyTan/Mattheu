@@ -73,8 +73,14 @@ export default function App() {
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [allAccounts, setAllAccounts] = useState<{id: string, role: string}[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>(["tiền nhà", "cơm trưa", "cơm tối", "nhậu", "đi chợ"]);
 
   const isAdmin = userRole === 'admin';
+
+  const capitalizeFirstLetter = (str: string) => {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  };
 
   const handleError = (error: unknown, operationType: OperationType, path: string | null) => {
     const errMessage = error instanceof Error ? error.message : String(error);
@@ -104,11 +110,12 @@ export default function App() {
     desc: '', 
     amount: '', 
     payer: '', 
+    date: '',
     split: [] as string[],
     isCustom: false,
     customAmounts: {} as Record<string, string>
   });
-  const [title, setTitle] = useState("Bảng thu chi tiêu nhà Lazaro");
+  const [title, setTitle] = useState("Bảng thu chi tiêu nhà LazaroHome");
 
   const todayDate = () => {
     const today = new Date();
@@ -184,15 +191,16 @@ export default function App() {
         if (data.members) setMembers(data.members);
         if (data.title) setTitle(data.title);
         if (data.defaultPayer) setDefaultPayer(data.defaultPayer);
-        if (data.passcode) setPasscode(data.passcode);
+        if (data.suggestions) setSuggestions(data.suggestions);
       } else {
         // Init settings if not exists (only if admin)
         if (isAdmin) {
           setDoc(doc(db, 'settings', 'house'), {
             members: ["Tân", "A Đạo", "Phương", "Phúc"],
-            title: "Bảng thu chi tiêu nhà Lazaro",
+            title: "Bảng thu chi tiêu nhà LazaroHome",
             defaultPayer: "Tân",
             passcode: "tan.2001",
+            suggestions: ["tiền nhà", "cơm trưa", "cơm tối", "nhậu", "đi chợ"],
             updatedAt: serverTimestamp()
           }).catch(err => handleError(err, OperationType.WRITE, 'settings/house'));
         }
@@ -414,6 +422,7 @@ export default function App() {
       desc: exp.desc, 
       amount: exp.amount.toString(), 
       payer: exp.payer, 
+      date: exp.date,
       split: exp.split,
       isCustom: !!exp.shares,
       customAmounts: customAmts
@@ -440,6 +449,7 @@ export default function App() {
         desc: editForm.desc,
         amount: editForm.isCustom ? Object.values(finalShares!).reduce((a: number, b: number) => a + b, 0) : totalAmount,
         payer: editForm.payer,
+        date: editForm.date,
         split: finalSplit,
         shares: finalShares,
         updatedAt: serverTimestamp()
@@ -524,7 +534,7 @@ export default function App() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `Thu_Chi_Lazaro_${selectedMonth}.csv`;
+    link.download = `Thu_Chi_LazaroHome_${selectedMonth}.csv`;
     link.click();
   };
 
@@ -622,7 +632,7 @@ export default function App() {
             <Wallet size={40} className="text-white" />
           </div>
           <div className="space-y-2">
-            <h1 className="text-3xl font-black text-slate-900 tracking-tight">Lazaro Home</h1>
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">LazaroHome</h1>
             <p className="text-slate-500 font-medium leading-relaxed">Vui lòng nhập mã tài khoản để truy cập</p>
           </div>
           
@@ -724,7 +734,7 @@ export default function App() {
             </div>
             <p className="text-slate-500 font-medium flex items-center gap-2">
               <Calendar size={16} />
-              Quản lý chi tiêu nhà Lazaro theo từng tháng
+              Quản lý chi tiêu nhà LazaroHome theo từng tháng
             </p>
           </div>
           
@@ -786,31 +796,81 @@ export default function App() {
             >
               <form onSubmit={handleAddExpense} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                  <div className="md:col-span-5">
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Nội dung chi tiêu</label>
-                    <input 
-                      placeholder="Mô tả khoản chi..." 
-                      value={newExp.desc}
-                      onChange={e => setNewExp({...newExp, desc: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-sm placeholder:text-slate-300 shadow-sm"
-                    />
-                  </div>
-                  <div className="md:col-span-3">
+                    <div className="md:col-span-12 relative">
+                      <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Nội dung chi tiêu</label>
+                      <input 
+                        placeholder="Mô tả khoản chi... (vd: Cơm trưa, Cơm tối, Tiền điện...)" 
+                        value={newExp.desc}
+                        onChange={e => {
+                          const val = capitalizeFirstLetter(e.target.value);
+                          setNewExp({...newExp, desc: val});
+                          setShowSuggestions(true);
+                        }}
+                        onFocus={() => setShowSuggestions(true)}
+                        onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold placeholder:text-slate-300 shadow-sm"
+                      />
+                      <AnimatePresence>
+                        {showSuggestions && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -10 }}
+                            className="absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/50 overflow-hidden"
+                          >
+                            <div className="p-2 grid grid-cols-2 sm:grid-cols-3 gap-1">
+                              {suggestions
+                                .filter(s => s.toLowerCase().includes(newExp.desc.toLowerCase()))
+                                .map(s => (
+                                <button
+                                  key={s}
+                                  type="button"
+                                  onClick={() => {
+                                    setNewExp({...newExp, desc: capitalizeFirstLetter(s)});
+                                    setShowSuggestions(false);
+                                  }}
+                                  className="text-left px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all flex items-center justify-between group"
+                                >
+                                  <span>{s}</span>
+                                  <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all text-blue-400" />
+                                </button>
+                              ))}
+                              {newExp.desc && !suggestions.includes(newExp.desc.toLowerCase()) && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const newSugs = [...suggestions, newExp.desc.toLowerCase()];
+                                    setSuggestions(newSugs);
+                                    await updateSettings({ suggestions: newSugs });
+                                    setShowSuggestions(false);
+                                  }}
+                                  className="col-span-full mt-1 px-4 py-3 bg-blue-50 text-blue-600 text-xs font-black uppercase tracking-widest rounded-xl hover:bg-blue-100 transition-all flex items-center justify-center gap-2 border border-blue-100 border-dashed"
+                                >
+                                  <Plus size={16} />
+                                  Lưu "{newExp.desc}" vào danh sách gợi ý
+                                </button>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  <div className="md:col-span-6">
                     <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Số tiền (đ)</label>
                     <input 
                       type="number"
                       placeholder="0"
                       value={newExp.amount}
                       onChange={e => setNewExp({...newExp, amount: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-sm font-bold shadow-sm"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold shadow-sm"
                     />
                   </div>
-                  <div className="md:col-span-4">
+                  <div className="md:col-span-6">
                     <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Người trả</label>
                     <select 
                       value={newExp.payer}
                       onChange={e => setNewExp({...newExp, payer: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-sm font-bold cursor-pointer appearance-none shadow-sm"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold cursor-pointer appearance-none shadow-sm"
                     >
                       {members.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
@@ -935,148 +995,32 @@ export default function App() {
                                {exp.date.split('-').slice(2).join('/')}/{exp.date.split('-')[1]}
                             </td>
                             <td className="py-4 px-6">
-                               {isEditing ? (
-                                 <div className="space-y-4">
-                                   <div className="space-y-1">
-                                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nội dung</span>
-                                      <input 
-                                        value={editForm.desc}
-                                        onChange={e => setEditForm({...editForm, desc: e.target.value})}
-                                        className="w-full bg-white border border-blue-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
-                                        placeholder="Mô tả..."
-                                      />
-                                   </div>
-                                   <div className="flex items-center justify-between">
-                                      <div className="space-y-1 flex-1 mr-4">
-                                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Người trả</span>
-                                         <select 
-                                           value={editForm.payer}
-                                           onChange={e => setEditForm({...editForm, payer: e.target.value})}
-                                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none cursor-pointer"
-                                         >
-                                           {members.map(m => <option key={m} value={m}>{m}</option>)}
-                                         </select>
-                                      </div>
-                                      <div className="mt-5">
-                                         <div className="flex bg-slate-100 p-1 rounded-xl">
-                                            <button 
-                                              type="button"
-                                              onClick={() => setEditForm({...editForm, isCustom: false})}
-                                              className={`px-3 py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${!editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-                                            >
-                                              Đều
-                                            </button>
-                                            <button 
-                                              type="button"
-                                              onClick={() => setEditForm({...editForm, isCustom: true})}
-                                              className={`px-3 py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-                                            >
-                                              Tùy chỉnh
-                                            </button>
-                                         </div>
-                                      </div>
-                                   </div>
-                                   {!editForm.isCustom && (
-                                     <div className="space-y-1">
-                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia cho</span>
-                                        <div className="flex flex-wrap gap-1">
-                                          {members.map(m => (
-                                            <button
-                                              key={m}
-                                              type="button"
-                                              onClick={() => toggleSplitEdit(m)}
-                                              className={`text-[9px] px-2 py-1 rounded-lg border-2 transition-all font-black ${editForm.split.includes(m) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-300 border-slate-100'}`}
-                                            >
-                                              {m}
-                                            </button>
-                                          ))}
-                                        </div>
-                                     </div>
-                                   )}
-                                 </div>
-                               ) : (
-                                 <div className="flex flex-col gap-0.5">
-                                    <span className="text-slate-900 font-bold">{exp.desc}</span>
-                                    <div className="flex items-center gap-2">
-                                       <span className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">Trả bởi {exp.payer}</span>
-                                       {exp.shares ? (
-                                         <span className="text-[10px] text-emerald-500 font-black tracking-tighter bg-emerald-50 px-1 rounded">CHIA TÙY CHỈNH</span>
-                                       ) : exp.split.length < members.length && (
-                                         <span className="text-[10px] text-blue-500 font-black tracking-tighter bg-blue-50 px-1 rounded">CHIA {exp.split.length} TV</span>
-                                       )}
-                                    </div>
-                                 </div>
-                               )}
+                               <div className="flex flex-col gap-0.5">
+                                  <span className="text-slate-900 font-bold">{exp.desc}</span>
+                                  <div className="flex items-center gap-2">
+                                     <span className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">Trả bởi {exp.payer}</span>
+                                     {exp.shares ? (
+                                       <span className="text-[10px] text-emerald-500 font-black tracking-tighter bg-emerald-50 px-1 rounded">CHIA TÙY CHỈNH</span>
+                                     ) : exp.split.length < members.length && (
+                                       <span className="text-[10px] text-blue-500 font-black tracking-tighter bg-blue-50 px-1 rounded">CHIA {exp.split.length} TV</span>
+                                     )}
+                                  </div>
+                               </div>
                             </td>
                             <td className="py-4 px-6 text-right font-black text-slate-900">
-                               {isEditing ? (
-                                 <input 
-                                   type="number"
-                                   value={editForm.amount}
-                                   onChange={e => setEditForm({...editForm, amount: e.target.value})}
-                                   className="w-24 bg-white border border-blue-200 rounded-xl px-3 py-2 text-sm text-right outline-none focus:ring-2 focus:ring-blue-500 font-black"
-                                 />
-                               ) : (
-                                 formatNumber(exp.amount)
-                               )}
+                               {formatNumber(exp.amount)}
                             </td>
                             {members.map(m => (
                               <td 
                                 key={m} 
-                                onClick={() => isEditing && !editForm.isCustom && toggleSplitEdit(m)}
-                                className={`py-4 px-6 text-center transition-all ${isEditing ? 'cursor-pointer hover:bg-slate-50' : ''} ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'text-blue-600 font-black' : 'text-slate-200'}`}
+                                className={`py-4 px-6 text-center transition-all ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'text-blue-600 font-black' : 'text-slate-200'}`}
                               >
-                                {isEditing ? (
-                                   <div className={`w-full h-full flex items-center justify-center`}>
-                                      {editForm.isCustom ? (
-                                        <div className="relative">
-                                           <input 
-                                             type="number"
-                                             value={editForm.customAmounts[m] || ''}
-                                             onChange={e => setEditForm({
-                                               ...editForm,
-                                               customAmounts: { ...editForm.customAmounts, [m]: e.target.value }
-                                             })}
-                                             className="w-20 bg-white border border-blue-100 rounded-lg px-2 py-1 text-[10px] font-black outline-none focus:ring-1 focus:ring-blue-500 text-right pr-5"
-                                           />
-                                           <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-slate-300 font-bold">đ</span>
-                                        </div>
-                                      ) : (
-                                        editForm.split.includes(m) ? (
-                                          <div className="flex flex-col items-center">
-                                            <Check size={14} className="text-emerald-500 mb-1" />
-                                            <span className="text-[10px] text-blue-600 font-black">{formatNumber(parseFloat(editForm.amount) / (editForm.split.length || 1))}</span>
-                                          </div>
-                                        ) : (
-                                          <X size={14} className="text-slate-200" />
-                                        )
-                                      )}
-                                   </div>
-                                ) : (
-                                   (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? formatNumber(exp.shares ? exp.shares[m] : share) : "-"
-                                )}
+                                {(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? formatNumber(exp.shares ? exp.shares[m] : share) : "-"}
                               </td>
                             ))}
                             <td className="py-4 px-6 text-center">
                                <div className="flex items-center justify-center gap-1">
-                                  {isEditing ? (
-                                    <>
-                                      <button 
-                                        onClick={() => handleSaveEdit(exp.id)}
-                                        className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-xl transition-all cursor-pointer"
-                                        title="Lưu"
-                                      >
-                                        <Check size={18} />
-                                      </button>
-                                      <button 
-                                        onClick={() => setEditingId(null)}
-                                        className="text-slate-400 hover:bg-slate-100 p-2 rounded-xl transition-all cursor-pointer"
-                                        title="Hủy"
-                                      >
-                                        <X size={18} />
-                                      </button>
-                                    </>
-                                  ) : (
+                                  {isAdmin && (
                                     <>
                                       <button 
                                         onClick={() => startEditing(exp)}
@@ -1122,138 +1066,58 @@ export default function App() {
                     const share = exp.amount / exp.split.length;
                     const isEditing = editingId === exp.id;
                     return (
-                      <motion.div 
-                        layout
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        key={exp.id} 
-                        className={`bg-white p-6 rounded-[32px] shadow-sm border transition-all relative ${isEditing ? 'border-blue-400 ring-4 ring-blue-50' : 'border-slate-200'}`}
-                      >
-                         <div className="absolute top-4 right-4 flex items-center gap-1">
-                            {isEditing ? (
-                              <>
-                                <button 
-                                  onClick={() => handleSaveEdit(exp.id)}
-                                  className="text-emerald-500 p-2 bg-emerald-50 rounded-xl cursor-pointer"
-                                >
-                                  <Check size={18} />
-                                </button>
-                                <button 
-                                  onClick={() => setEditingId(null)}
-                                  className="text-slate-400 p-2 bg-slate-50 rounded-xl cursor-pointer"
-                                >
-                                  <X size={18} />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button 
-                                  onClick={() => startEditing(exp)}
-                                  className="text-slate-300 p-2 hover:text-blue-600 transition-all cursor-pointer"
-                                >
-                                  <Pencil size={16} />
-                                </button>
-                                <button 
-                                  onClick={() => handleDeleteExpense(exp.id)}
-                                  className="text-slate-300 p-2 hover:text-red-500 transition-all cursor-pointer"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </>
-                            )}
-                         </div>
-                         <div className="flex flex-col gap-6">
-                            <div className="flex justify-between items-start pt-1">
-                               {isEditing ? (
-                                 <div className="space-y-4 w-full mr-12">
-                                    <div className="space-y-1">
-                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nội dung</span>
-                                       <input 
-                                         value={editForm.desc}
-                                         onChange={e => setEditForm({...editForm, desc: e.target.value})}
-                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                                       />
-                                    </div>
-                                    <div className="space-y-1">
-                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Người trả</span>
-                                       <select 
-                                         value={editForm.payer}
-                                         onChange={e => setEditForm({...editForm, payer: e.target.value})}
-                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                                       >
-                                         {members.map(m => <option key={m} value={m}>{m}</option>)}
-                                       </select>
-                                    </div>
-                                    <div className="space-y-1">
-                                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Số tiền</span>
-                                       <input 
-                                         type="number"
-                                         value={editForm.amount}
-                                         onChange={e => setEditForm({...editForm, amount: e.target.value})}
-                                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-lg font-black outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                                       />
-                                    </div>
-                                 </div>
-                               ) : (
-                                 <div>
-                                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{exp.date.split('-').reverse().join('/')}</div>
-                                    <div className="text-xl font-black text-slate-900 leading-tight">{exp.desc}</div>
-                                    <div className="flex items-center gap-2 mt-2">
-                                       <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black uppercase">{exp.payer} chi</span>
-                                    </div>
-                                 </div>
-                               )}
-                               {!isEditing && <div className="text-2xl font-black text-slate-900">{formatMoney(exp.amount)}</div>}
-                            </div>
-                            
-                             <div className="space-y-3 pt-4 border-t border-slate-50">
-                               <div className="flex items-center justify-between">
-                                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia sẻ cho:</div>
-                                  {isEditing && (
-                                     <div className="flex bg-slate-100 p-0.5 rounded-lg">
-                                        <button 
-                                          type="button" 
-                                          onClick={() => setEditForm({...editForm, isCustom: false})}
-                                          className={`px-2 py-1 text-[8px] font-black uppercase rounded ${!editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-                                        >Đều</button>
-                                        <button 
-                                          type="button" 
-                                          onClick={() => setEditForm({...editForm, isCustom: true})}
-                                          className={`px-2 py-1 text-[8px] font-black uppercase rounded ${editForm.isCustom ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-                                        >Tùy chỉnh</button>
-                                     </div>
-                                  )}
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          key={exp.id} 
+                          className="bg-white p-6 rounded-[32px] shadow-sm border border-slate-200 transition-all relative"
+                        >
+                           <div className="absolute top-4 right-4 flex items-center gap-1">
+                              {isAdmin && (
+                                <>
+                                  <button 
+                                    onClick={() => startEditing(exp)}
+                                    className="text-slate-300 p-2 hover:text-blue-600 transition-all cursor-pointer"
+                                  >
+                                    <Pencil size={16} />
+                                  </button>
+                                  <button 
+                                    onClick={() => handleDeleteExpense(exp.id)}
+                                    className="text-slate-300 p-2 hover:text-red-500 transition-all cursor-pointer"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </>
+                              )}
+                           </div>
+                           <div className="flex flex-col gap-6">
+                               <div>
+                                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{exp.date.split('-').reverse().join('/')}</div>
+                                  <div className="text-xl font-black text-slate-900 leading-tight">{exp.desc}</div>
+                                  <div className="flex items-center gap-2 mt-2">
+                                     <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black uppercase">{exp.payer} chi</span>
+                                  </div>
                                </div>
-                               <div className="grid grid-cols-2 gap-2">
-                                  {members.map(m => (
-                                     <div key={m} className="relative">
-                                        <button 
-                                          disabled={!isEditing || editForm.isCustom}
-                                          onClick={() => toggleSplitEdit(m)}
-                                          className={`w-full px-3 py-2 rounded-2xl text-[10px] font-black flex justify-between items-center transition-all ${isEditing ? (editForm.isCustom ? 'bg-white border-2 border-slate-100' : editForm.split.includes(m) ? 'bg-blue-600 text-white border-2 border-blue-600' : 'bg-slate-50 text-slate-300 border-2 border-transparent') : (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'bg-slate-50 text-slate-900 border-2 border-slate-100' : 'text-slate-200 border-2 border-slate-50/50'}`}
-                                        >
-                                          <span>{m}</span>
-                                          {!isEditing && (exp.shares ? !!exp.shares[m] : exp.split.includes(m)) && (
-                                            <span className="text-blue-600">{formatMoney(exp.shares ? exp.shares[m] : share)}</span>
-                                          )}
-                                          {isEditing && !editForm.isCustom && editForm.split.includes(m) && <Check size={12} />}
-                                        </button>
-                                        {isEditing && editForm.isCustom && (
-                                          <input 
-                                            type="number"
-                                            value={editForm.customAmounts[m] || ''}
-                                            onChange={e => setEditForm({...editForm, customAmounts: {...editForm.customAmounts, [m]: e.target.value}})}
-                                            className="absolute inset-0 bg-transparent text-right px-3 py-2 text-[10px] font-black outline-none"
-                                            placeholder="0"
-                                          />
-                                        )}
-                                     </div>
-                                  ))}
+                               <div className="text-2xl font-black text-slate-900">{formatMoney(exp.amount)}</div>
+                               
+                               <div className="space-y-3 pt-4 border-t border-slate-50">
+                                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia sẻ cho:</div>
+                                 <div className="grid grid-cols-2 gap-2">
+                                    {members.map(m => (
+                                       <div key={m} className="relative">
+                                          <div className={`w-full px-3 py-2 rounded-2xl text-[10px] font-black flex justify-between items-center transition-all ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'bg-slate-50 text-slate-900 border-2 border-slate-100' : 'text-slate-200 border-2 border-slate-50/50'}`}>
+                                            <span>{m}</span>
+                                            {(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) && (
+                                              <span className="text-blue-600">{formatMoney(exp.shares ? exp.shares[m] : share)}</span>
+                                            )}
+                                          </div>
+                                       </div>
+                                    ))}
+                                 </div>
                                </div>
-                            </div>
-                         </div>
-                      </motion.div>
+                           </div>
+                        </motion.div>
                     )
                   })}
                </AnimatePresence>
@@ -1265,6 +1129,204 @@ export default function App() {
                   <p className="font-extrabold uppercase tracking-widest text-xs">Chưa có dữ liệu tháng này</p>
                </div>
             )}
+
+            <AnimatePresence>
+              {editingId && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                    className="w-full max-w-2xl bg-white rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+                  >
+                    <div className="bg-slate-900 p-8 flex items-center justify-between text-white shrink-0">
+                      <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/40"><Pencil size={24} /></div>
+                        <div>
+                          <h2 className="text-xl font-black">Chỉnh sửa khoản chi</h2>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID: {editingId}</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setEditingId(null)} className="p-2 hover:bg-slate-800 rounded-xl transition-all cursor-pointer">
+                        <X size={24} />
+                      </button>
+                    </div>
+
+                    <div className="p-8 space-y-8 overflow-y-auto">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-4">
+                          <div className="space-y-2 relative">
+                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nội dung</label>
+                             <input 
+                               value={editForm.desc}
+                               onChange={e => {
+                                 const val = capitalizeFirstLetter(e.target.value);
+                                 setEditForm({...editForm, desc: val});
+                                 setShowSuggestions(true);
+                               }}
+                               onFocus={() => setShowSuggestions(true)}
+                               onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all text-sm"
+                               placeholder="Mô tả..."
+                             />
+                             {showSuggestions && (
+                               <div className="absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/50 p-2 grid grid-cols-2 gap-1 overflow-hidden">
+                                 {suggestions
+                                   .filter(s => s.toLowerCase().includes(editForm.desc.toLowerCase()))
+                                   .map(s => (
+                                   <button
+                                     key={s}
+                                     type="button"
+                                     onClick={() => {
+                                       setEditForm({...editForm, desc: capitalizeFirstLetter(s)});
+                                       setShowSuggestions(false);
+                                     }}
+                                     className="text-left px-3 py-2 text-[10px] font-bold text-slate-600 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all"
+                                   >
+                                     {s}
+                                   </button>
+                                 ))}
+                                 {editForm.desc && !suggestions.includes(editForm.desc.toLowerCase()) && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const newSugs = [...suggestions, editForm.desc.toLowerCase()];
+                                        setSuggestions(newSugs);
+                                        await updateSettings({ suggestions: newSugs });
+                                        setShowSuggestions(false);
+                                      }}
+                                      className="col-span-full mt-1 px-3 py-2 bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-blue-100 transition-all flex items-center justify-center gap-2 border border-blue-100 border-dashed"
+                                    >
+                                      <Plus size={14} />
+                                      Thêm gợi ý này
+                                    </button>
+                                 )}
+                               </div>
+                             )}
+                          </div>
+
+                          <div className="space-y-2">
+                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Số tiền (đ)</label>
+                             <input 
+                               type="number"
+                               value={editForm.amount}
+                               onChange={e => setEditForm({...editForm, amount: e.target.value})}
+                               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-xl font-black outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                             />
+                          </div>
+
+                          <div className="space-y-2">
+                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Người chi</label>
+                             <select 
+                               value={editForm.payer}
+                               onChange={e => setEditForm({...editForm, payer: e.target.value})}
+                               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all appearance-none cursor-pointer"
+                             >
+                               {members.map(m => <option key={m} value={m}>{m}</option>)}
+                             </select>
+                          </div>
+
+                          {isAdmin && (
+                            <div className="space-y-2">
+                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Ngày chi</label>
+                               <input 
+                                 type="date"
+                                 value={editForm.date}
+                                 onChange={e => setEditForm({...editForm, date: e.target.value})}
+                                 className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                               />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-6 bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+                           <div className="flex items-center justify-between">
+                              <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia tiền</h4>
+                              <div className="flex bg-white p-1 rounded-xl shadow-sm border border-slate-100">
+                                 <button 
+                                   type="button"
+                                   onClick={() => setEditForm({...editForm, isCustom: false})}
+                                   className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all ${!editForm.isCustom ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400'}`}
+                                 >Đều</button>
+                                 <button 
+                                   type="button"
+                                   onClick={() => setEditForm({...editForm, isCustom: true})}
+                                   className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all ${editForm.isCustom ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400'}`}
+                                 >Tùy chỉnh</button>
+                              </div>
+                           </div>
+
+                           <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+                              {members.map(m => (
+                                <div key={m} className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${!editForm.isCustom && editForm.split.includes(m) ? 'bg-blue-50 border-blue-100' : 'bg-white border-slate-100'}`}>
+                                   <button 
+                                      type="button"
+                                      disabled={editForm.isCustom}
+                                      onClick={() => toggleSplitEdit(m)}
+                                      className={`flex-1 flex items-center gap-3 text-left ${editForm.isCustom ? 'cursor-default' : 'cursor-pointer'}`}
+                                   >
+                                      <div className={`w-5 h-5 rounded-md flex items-center justify-center transition-all ${editForm.split.includes(m) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-transparent'}`}>
+                                         <Check size={14} />
+                                      </div>
+                                      <span className={`text-sm font-black ${editForm.split.includes(m) ? 'text-slate-900' : 'text-slate-400'}`}>{m}</span>
+                                   </button>
+
+                                   {editForm.isCustom && (
+                                     <div className="relative">
+                                       <input 
+                                         type="number"
+                                         value={editForm.customAmounts[m] || ''}
+                                         onChange={e => setEditForm({...editForm, customAmounts: {...editForm.customAmounts, [m]: e.target.value}})}
+                                         className="w-24 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-blue-500 text-right pr-6"
+                                         placeholder="0"
+                                       />
+                                       <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-300">đ</span>
+                                     </div>
+                                   )}
+                                   {!editForm.isCustom && editForm.split.includes(m) && (
+                                      <span className="text-[10px] font-black text-blue-600">{formatMoney(parseFloat(editForm.amount) / (editForm.split.length || 1))}</span>
+                                   )}
+                                </div>
+                              ))}
+                           </div>
+
+                           {!editForm.isCustom && (
+                             <button 
+                              type="button"
+                              onClick={() => setEditForm({...editForm, split: members})}
+                              className="w-full py-3 border-2 border-dashed border-slate-200 rounded-2xl text-[10px] font-black text-slate-400 uppercase tracking-widest hover:border-blue-200 hover:text-blue-500 transition-all"
+                             >Tất cả thành viên</button>
+                           )}
+
+                           {editForm.isCustom && (
+                             <div className="pt-2 flex flex-col gap-1">
+                               <div className="flex justify-between items-center text-[10px] font-black">
+                                  <span className="text-slate-400 uppercase">Tổng chia</span>
+                                  <span className="text-slate-900">{formatMoney(Object.values(editForm.customAmounts).reduce((a, b) => a + (parseFloat(b as string) || 0), 0))}</span>
+                               </div>
+                               {Math.abs(Object.values(editForm.customAmounts).reduce((a, b) => a + (parseFloat(b as string) || 0), 0) - (parseFloat(editForm.amount) || 0)) > 1 && (
+                                 <div className="bg-rose-50 text-rose-500 p-2 rounded-lg text-[9px] font-bold text-center">Tiền chia chưa khớp tổng chi</div>
+                               )}
+                             </div>
+                           )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4 shrink-0">
+                      <button 
+                        onClick={() => setEditingId(null)}
+                        className="flex-1 py-4 rounded-2xl font-black text-slate-400 bg-white border border-slate-200 hover:bg-slate-50 transition-all cursor-pointer"
+                      >HỦY BỎ</button>
+                      <button 
+                        onClick={() => handleSaveEdit(editingId!)}
+                        className="flex-1 py-4 rounded-[20px] font-black text-white bg-blue-600 hover:bg-blue-700 shadow-xl shadow-blue-200 transition-all border-b-4 border-blue-800 active:border-b-0 active:translate-y-[2px] cursor-pointer"
+                      >LƯU THAY ĐỔI</button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
 
             <AnimatePresence>
               {showAdminPanel && isAdmin && (
@@ -1311,6 +1373,23 @@ export default function App() {
                              THÊM
                            </button>
                          </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Gợi ý chi tiêu</h4>
+                        <div className="space-y-3">
+                          <p className="text-[10px] text-slate-400 font-medium px-1">Ngăn cách bởi dấu phẩy (vd: Cơm trưa, Cơm tối...)</p>
+                          <textarea 
+                            value={suggestions.join(", ")}
+                            onChange={e => {
+                              const newSugs = e.target.value.split(",").map(s => s.trim()).filter(s => s !== "");
+                              setSuggestions(newSugs);
+                              updateSettings({ suggestions: newSugs });
+                            }}
+                            rows={3}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 font-bold outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                          />
+                        </div>
                       </div>
 
                       <div className="space-y-4">

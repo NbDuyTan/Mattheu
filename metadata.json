@@ -1,6 +1,6 @@
 {
-  "name": "Bảng thu chi tiêu nhà Lazaro",
-  "description": "Ứng dụng quản lý thu chi và chia sẻ chi phí cho nhà Lazaro theo tháng.",
+  "name": "LazaroHome",
+  "description": "Ứng dụng quản lý thu chi và chia sẻ chi phí cho nhà LazaroHome theo tháng.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
