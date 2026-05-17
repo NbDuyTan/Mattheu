@@ -62,11 +62,14 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [accountCode, setAccountCode] = useState<string | null>(() => localStorage.getItem('lazaro_account_code'));
-  const [userRole, setUserRole] = useState<'admin' | 'member' | null>(null);
+  const [userRole, setUserRole] = useState<'admin' | 'member' | null>(() => localStorage.getItem('lazaro_user_role') as any);
   const [enteredCode, setEnteredCode] = useState("");
-  const [members, setMembers] = useState<string[]>(["Tân", "A Đạo", "Phương", "Phúc"]);
+  const [members, setMembers] = useState<string[]>(() => {
+    const cached = localStorage.getItem('lazaro_members');
+    return cached ? JSON.parse(cached) : ["Tân", "A Đạo", "Phương", "Phúc"];
+  });
   const [passcode, setPasscode] = useState("tan.2001");
-  const [defaultPayer, setDefaultPayer] = useState("Tân");
+  const [defaultPayer, setDefaultPayer] = useState(() => localStorage.getItem('lazaro_default_payer') || "Tân");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
@@ -74,7 +77,25 @@ export default function App() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [allAccounts, setAllAccounts] = useState<{id: string, role: string}[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>(["tiền nhà", "cơm trưa", "cơm tối", "nhậu", "đi chợ"]);
+  const [suggestions, setSuggestions] = useState<string[]>(() => {
+    const cached = localStorage.getItem('lazaro_suggestions');
+    return cached ? JSON.parse(cached) : ["tiền nhà", "cơm trưa", "cơm tối", "nhậu", "đi chợ"];
+  });
+
+  const [expenses, setExpenses] = useState<{id: string, date: string, desc: string, amount: number, payer: string, split: string[], shares: Record<string, number> | null}[]>(() => {
+    const cached = localStorage.getItem('lazaro_expenses');
+    return cached ? JSON.parse(cached) : [];
+  });
+  const [title, setTitle] = useState(() => localStorage.getItem('lazaro_title') || "Bảng thu chi tiêu nhà LazaroHome");
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
+  const todayDate = () => {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  };
+
+  const getMonthStr = (date: string) => date.split('-').slice(0, 2).join('-');
+  const [selectedMonth, setSelectedMonth] = useState(getMonthStr(todayDate()));
 
   const isAdmin = userRole === 'admin';
 
@@ -115,22 +136,15 @@ export default function App() {
     isCustom: false,
     customAmounts: {} as Record<string, string>
   });
-  const [title, setTitle] = useState("Bảng thu chi tiêu nhà LazaroHome");
-
-  const todayDate = () => {
-    const today = new Date();
-    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  };
-
-  const getMonthStr = (date: string) => date.split('-').slice(0, 2).join('-');
-  const [selectedMonth, setSelectedMonth] = useState(getMonthStr(todayDate()));
-
-  const [expenses, setExpenses] = useState<{id: string, date: string, desc: string, amount: number, payer: string, split: string[], shares: Record<string, number> | null}[]>([]);
 
   // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      setLoading(true);
+      // If we have cached data, we don't need to show the full screen loading
+      if (!localStorage.getItem('lazaro_expenses')) {
+        setLoading(true);
+      }
+      
       if (!u) {
         try {
           const cred = await signInAnonymously(auth);
@@ -155,7 +169,9 @@ export default function App() {
             // Get role
             const accountSnap = await getDoc(doc(db, 'accounts', code));
             if (accountSnap.exists()) {
-              setUserRole(accountSnap.data().role);
+              const role = accountSnap.data().role;
+              setUserRole(role);
+              localStorage.setItem('lazaro_user_role', role);
             }
           }
         } catch (err) {
@@ -188,10 +204,22 @@ export default function App() {
     const unsub = onSnapshot(doc(db, 'settings', 'house'), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        if (data.members) setMembers(data.members);
-        if (data.title) setTitle(data.title);
-        if (data.defaultPayer) setDefaultPayer(data.defaultPayer);
-        if (data.suggestions) setSuggestions(data.suggestions);
+        if (data.members) {
+          setMembers(data.members);
+          localStorage.setItem('lazaro_members', JSON.stringify(data.members));
+        }
+        if (data.title) {
+          setTitle(data.title);
+          localStorage.setItem('lazaro_title', data.title);
+        }
+        if (data.defaultPayer) {
+          setDefaultPayer(data.defaultPayer);
+          localStorage.setItem('lazaro_default_payer', data.defaultPayer);
+        }
+        if (data.suggestions) {
+          setSuggestions(data.suggestions);
+          localStorage.setItem('lazaro_suggestions', JSON.stringify(data.suggestions));
+        }
       } else {
         // Init settings if not exists (only if admin)
         if (isAdmin) {
@@ -219,7 +247,14 @@ export default function App() {
         ...d.data()
       })) as any[];
       setExpenses(exps);
-    }, (err) => handleError(err, OperationType.LIST, 'expenses'));
+      localStorage.setItem('lazaro_expenses', JSON.stringify(exps));
+      setIsDataLoaded(true);
+      setLoading(false); // Make sure to clear loading state once we have real data
+    }, (err) => {
+      handleError(err, OperationType.LIST, 'expenses');
+      setIsDataLoaded(true); // Stop spin even on error if data was cached
+      setLoading(false);
+    });
     return unsub;
   }, [user, accountCode]);
 
@@ -262,6 +297,12 @@ export default function App() {
     setAccountCode(null);
     setUserRole(null);
     localStorage.removeItem('lazaro_account_code');
+    localStorage.removeItem('lazaro_user_role');
+    localStorage.removeItem('lazaro_expenses');
+    localStorage.removeItem('lazaro_members');
+    localStorage.removeItem('lazaro_title');
+    localStorage.removeItem('lazaro_suggestions');
+    localStorage.removeItem('lazaro_default_payer');
     auth.signOut();
   };
 
@@ -540,12 +581,19 @@ export default function App() {
 
   const totalMonthlySpend = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
 
-  if (loading) {
+  if (loading && !localStorage.getItem('lazaro_expenses')) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Đang tải dữ liệu...</p>
+          <motion.div 
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
+          ></motion.div>
+          <div className="flex flex-col items-center">
+             <p className="text-slate-400 font-black uppercase tracking-widest text-[10px] animate-pulse">Khởi động hệ thống...</p>
+             <p className="text-slate-300 text-[8px] mt-2 font-medium">Vui lòng đợi vài giây để máy chủ thức dậy</p>
+          </div>
         </div>
       </div>
     );
@@ -1302,9 +1350,9 @@ export default function App() {
                              <div className="pt-2 flex flex-col gap-1">
                                <div className="flex justify-between items-center text-[10px] font-black">
                                   <span className="text-slate-400 uppercase">Tổng chia</span>
-                                  <span className="text-slate-900">{formatMoney(Object.values(editForm.customAmounts).reduce((a, b) => a + (parseFloat(b as string) || 0), 0))}</span>
+                                  <span className="text-slate-900">{formatMoney(Object.values(editForm.customAmounts).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0))}</span>
                                </div>
-                               {Math.abs(Object.values(editForm.customAmounts).reduce((a, b) => a + (parseFloat(b as string) || 0), 0) - (parseFloat(editForm.amount) || 0)) > 1 && (
+                               {Math.abs(Object.values(editForm.customAmounts).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0) - (parseFloat(editForm.amount) || 0)) > 1 && (
                                  <div className="bg-rose-50 text-rose-500 p-2 rounded-lg text-[9px] font-bold text-center">Tiền chia chưa khớp tổng chi</div>
                                )}
                              </div>
