@@ -2,5 +2,5 @@
   "name": "LazaroHome",
   "description": "Ứng dụng quản lý thu chi và chia sẻ chi phí cho nhà LazaroHome theo tháng.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
