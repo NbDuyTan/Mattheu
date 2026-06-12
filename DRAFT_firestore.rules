@@ -20,7 +20,7 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function isOwner(uid) {
@@ -29,31 +29,36 @@ service cloud.firestore {
 
     // Membership Logic: User has a profile that points to a valid account
     function isMember() {
-      return request.auth != null;
+      let profilePath = /databases/$(database)/documents/profiles/$(request.auth.uid);
+      return isSignedIn() && exists(profilePath);
     }
     
     function isAdmin() {
-      return request.auth != null && 
-             exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/accounts/$(get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.get('code', ''))).data.get('role', '') == 'admin';
+      if (!isMember()) return false;
+      let profile = get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+      let accountPath = /databases/$(database)/documents/accounts/$(profile.code);
+      return exists(accountPath) && get(accountPath).data.role == 'admin';
     }
 
     // 2. Validation Blueprints
     
     function isValidAccount(data) {
-      return data.keys().hasAll(['role', 'createdAt']) && data.keys().size() == 2
+      let required = ['role', 'createdAt'];
+      return data.keys().hasAll(required) && data.keys().size() == 2
         && data.role in ['admin', 'member']
-        && (request.method == 'create' ? data.createdAt == request.time : data.createdAt == existing().createdAt);
+        && data.createdAt == request.time;
     }
 
     function isValidProfile(data, uid) {
-      return data.keys().hasAll(['code', 'linkedAt']) && data.keys().size() == 2
+      let required = ['code', 'linkedAt'];
+      return data.keys().hasAll(required) && data.keys().size() == 2
         && data.code is string && data.code.size() <= 100
-        && (data.linkedAt == request.time || data.linkedAt == existing().linkedAt)
+        && data.linkedAt == request.time
         && exists(/databases/$(database)/documents/accounts/$(data.code));
     }
 
     function isValidExpense(data, isCreate) {
+      let required = ['date', 'desc', 'amount', 'payer', 'split', 'createdAt', 'updatedAt'];
       return data.keys().hasAll(['date', 'desc', 'amount', 'payer', 'split', 'createdAt', 'updatedAt'])
         && data.keys().size() >= 7 && data.keys().size() <= 12
         && data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
@@ -63,13 +68,14 @@ service cloud.firestore {
         && data.split is list && data.split.size() <= 100
         && (isCreate ? data.createdAt == request.time : data.createdAt == existing().createdAt)
         && data.updatedAt == request.time
-        && (!data.keys().hasAny(['shares']) || data.shares is map || data.shares == null)
-        && (!data.keys().hasAny(['paidBy']) || data.paidBy is map || data.paidBy == null)
-        && (!data.keys().hasAny(['customAmounts']) || data.customAmounts is map || data.customAmounts == null);
+        // Protect nested structures if present
+        && (!data.keys().hasAny(['shares']) || data.shares is map)
+        && (!data.keys().hasAny(['paidBy']) || data.paidBy is map)
+        && (!data.keys().hasAny(['customAmounts']) || data.customAmounts is map);
     }
 
     function isValidSettings(data) {
-      return data.keys().hasAll(['members', 'title', 'defaultPayer', 'passcode', 'updatedAt', 'suggestions'])
+      return data.keys().hasAll(['members', 'title', 'defaultPayer', 'passcode', 'updatedAt'])
         && data.members is list && data.members.size() <= 100
         && data.title is string && data.title.size() <= 500
         && data.defaultPayer is string && data.defaultPayer.size() <= 200
@@ -80,19 +86,19 @@ service cloud.firestore {
     // 4. Collection Rules
     
     match /accounts/{code} {
-      allow get: if request.auth != null;
+      allow get: if isSignedIn();
       allow list: if isMember();
-      allow create: if request.auth != null && (
+      // Only admins or the bootstrapping logic can create/write accounts
+      allow create: if isSignedIn() && (
         isAdmin() || 
         (code == 'tan.nd.05' && !exists(/databases/$(database)/documents/accounts/tan.nd.05))
       ) && isValidAccount(incoming());
-      allow update: if isAdmin() && isValidAccount(incoming());
-      allow delete: if isAdmin();
+      allow update, delete: if isAdmin();
     }
     
     match /profiles/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow create, update: if request.auth != null && request.auth.uid == uid && isValidProfile(incoming(), uid);
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid) && isValidProfile(incoming(), uid);
     }
 
     match /expenses/{expenseId} {
@@ -108,7 +114,9 @@ service cloud.firestore {
     }
 
     match /settlements/{month} {
+      // Allow read for any member to see monthly status
       allow read: if isMember();
+      // Only admins can mark settlements as paid
       allow write: if isAdmin() && isValidId(month);
     }
   }

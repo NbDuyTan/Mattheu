@@ -1,1 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-primary: #1E40AF; /* Deep Blue */
+  --color-brand-soft: #EFF6FF;
+  --radius-card: 24px;
+  --radius-inner: 16px;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
+}
+
+@layer components {
+  .bento-card {
+    @apply bg-white border border-slate-200/60 shadow-sm rounded-[var(--radius-card)] p-6 transition-all hover:shadow-md hover:border-slate-300/50;
+  }
+  
+  .input-field {
+    @apply w-full h-11 px-4 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all font-medium text-sm;
+  }
+
+  .btn-primary {
+    @apply h-11 px-6 bg-slate-900 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 hover:bg-slate-800 active:scale-[0.98] transition-all disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .type-label {
+    @apply text-[10px] font-extrabold uppercase tracking-[0.15em] text-slate-400 mb-1.5;
+  }
+}

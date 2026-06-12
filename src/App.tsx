@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, Trash2, Download, Receipt, Users, Calculator, ArrowRight, UserCog, Pencil, Check, X, UserPlus, UserMinus, Calendar, ChevronRight, Wallet, LogIn, LogOut } from 'lucide-react';
+import { Plus, Trash2, Download, Receipt, Users, Calculator, ArrowRight, UserCog, Pencil, Check, X, UserPlus, UserMinus, Calendar, ChevronRight, Wallet, LogIn, LogOut, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   db, 
@@ -19,7 +19,7 @@ import {
   orderBy, 
   serverTimestamp,
   getDoc,
-  User
+  type User
 } from './firebase';
 
 enum OperationType {
@@ -82,12 +82,15 @@ export default function App() {
     return cached ? JSON.parse(cached) : ["tiền nhà", "cơm trưa", "cơm tối", "nhậu", "đi chợ"];
   });
 
-  const [expenses, setExpenses] = useState<{id: string, date: string, desc: string, amount: number, payer: string, split: string[], shares: Record<string, number> | null}[]>(() => {
+  const [expenses, setExpenses] = useState<{id: string, date: string, desc: string, amount: number, payer: string, split: string[], shares: Record<string, number> | null, paidBy: Record<string, boolean> | null}[]>(() => {
     const cached = localStorage.getItem('lazaro_expenses');
     return cached ? JSON.parse(cached) : [];
   });
   const [title, setTitle] = useState(() => localStorage.getItem('lazaro_title') || "Bảng thu chi tiêu nhà LazaroHome");
+  const [isVerified, setIsVerified] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [settlements, setSettlements] = useState<Record<string, boolean>>({});
 
   const todayDate = () => {
     const today = new Date();
@@ -134,7 +137,8 @@ export default function App() {
     date: '',
     split: [] as string[],
     isCustom: false,
-    customAmounts: {} as Record<string, string>
+    customAmounts: {} as Record<string, string>,
+    paidBy: {} as Record<string, boolean>
   });
 
   // Auth Listener
@@ -146,6 +150,7 @@ export default function App() {
       }
       
       if (!u) {
+        setIsVerified(false);
         try {
           const cred = await signInAnonymously(auth);
           setUser(cred.user);
@@ -155,6 +160,7 @@ export default function App() {
           }
           console.error("Auth error:", err.message);
           setLoading(false);
+          setIsAuthChecking(false);
         }
       } else {
         setUser(u);
@@ -162,7 +168,8 @@ export default function App() {
         try {
           const profileSnap = await getDoc(doc(db, 'profiles', u.uid));
           if (profileSnap.exists()) {
-            const code = profileSnap.data().code;
+            const data = profileSnap.data();
+            const code = data.code;
             setAccountCode(code);
             localStorage.setItem('lazaro_account_code', code);
             
@@ -172,12 +179,19 @@ export default function App() {
               const role = accountSnap.data().role;
               setUserRole(role);
               localStorage.setItem('lazaro_user_role', role);
+              setIsVerified(true);
+            } else {
+               setIsVerified(false);
             }
+          } else {
+            setIsVerified(false);
           }
         } catch (err) {
           console.error("Error loading account profile:", err);
+          setIsVerified(false);
         }
         setLoading(false);
+        setIsAuthChecking(false);
       }
     });
     return unsubscribe;
@@ -199,8 +213,8 @@ export default function App() {
   }, [isAdmin]);
 
   // Settings Listener
-  useEffect(() => {
-    if (!user || !accountCode) return;
+    useEffect(() => {
+    if (!user || !accountCode || !isVerified) return;
     const unsub = onSnapshot(doc(db, 'settings', 'house'), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
@@ -235,11 +249,11 @@ export default function App() {
       }
     }, (err) => handleError(err, OperationType.GET, 'settings/house'));
     return unsub;
-  }, [user, accountCode, isAdmin]);
+  }, [user, accountCode, isAdmin, isVerified]);
 
   // Expenses Listener
   useEffect(() => {
-    if (!user || !accountCode) return;
+    if (!user || !accountCode || !isVerified) return;
     const q = query(collection(db, 'expenses'), orderBy('date', 'desc'));
     const unsub = onSnapshot(q, (snapshot) => {
       const exps = snapshot.docs.map(d => ({
@@ -256,7 +270,40 @@ export default function App() {
       setLoading(false);
     });
     return unsub;
-  }, [user, accountCode]);
+  }, [user, accountCode, isVerified]);
+
+  // Settlements Listener
+  useEffect(() => {
+    if (!user || !accountCode || !selectedMonth || !isVerified) {
+      console.log("Settlements listener skipped:", { hasUser: !!user, hasCode: !!accountCode, month: selectedMonth, isVerified });
+      return;
+    }
+    console.log("Settlements listener starting for:", selectedMonth);
+    const unsub = onSnapshot(doc(db, 'settlements', selectedMonth), (snapshot) => {
+      if (snapshot.exists()) {
+        setSettlements(snapshot.data() as Record<string, boolean>);
+      } else {
+        setSettlements({});
+      }
+    }, (err) => handleError(err, OperationType.GET, `settlements/${selectedMonth}`));
+    return unsub;
+  }, [user, accountCode, selectedMonth, isVerified]);
+
+  const toggleSettlement = async (member: string) => {
+    if (!isAdmin) {
+      console.warn("Attempted toggleSettlement without admin privileges");
+      return;
+    }
+    console.log(`Toggling settlement for ${member} in ${selectedMonth}`);
+    try {
+      const newStatus = !settlements[member];
+      await setDoc(doc(db, 'settlements', selectedMonth), {
+        [member]: newStatus
+      }, { merge: true });
+    } catch (err) {
+      handleError(err, OperationType.UPDATE, `settlements/${selectedMonth}/${member}`);
+    }
+  };
 
   const handleLogin = async () => {
     if (enteredCode.trim().length === 0 || !user) return;
@@ -282,6 +329,8 @@ export default function App() {
         setAccountCode(enteredCode);
         setUserRole(accountSnap.data().role);
         localStorage.setItem('lazaro_account_code', enteredCode);
+        localStorage.setItem('lazaro_user_role', accountSnap.data().role);
+        setIsVerified(true);
         setEnteredCode("");
       } else {
         setError("Mã tài khoản không tồn tại!");
@@ -296,6 +345,7 @@ export default function App() {
   const handleLogout = () => {
     setAccountCode(null);
     setUserRole(null);
+    setIsVerified(false);
     localStorage.removeItem('lazaro_account_code');
     localStorage.removeItem('lazaro_user_role');
     localStorage.removeItem('lazaro_expenses');
@@ -344,7 +394,8 @@ export default function App() {
     payer: defaultPayer,
     split: members,
     isCustom: false,
-    customAmounts: {} as Record<string, string>
+    customAmounts: {} as Record<string, string>,
+    paidBy: {} as Record<string, boolean>
   });
 
   // Sync state when members change
@@ -440,12 +491,13 @@ export default function App() {
         payer: newExp.payer,
         split: finalSplit,
         shares: finalShares,
+        paidBy: newExp.paidBy || {},
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
       
       setSelectedMonth(getMonthStr(newExp.date));
-      setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {} });
+      setNewExp({ ...newExp, desc: '', amount: '', payer: defaultPayer, split: members, isCustom: false, customAmounts: {}, paidBy: {} });
     } catch (err) {
       handleError(err, OperationType.CREATE, 'expenses');
     }
@@ -466,8 +518,24 @@ export default function App() {
       date: exp.date,
       split: exp.split,
       isCustom: !!exp.shares,
-      customAmounts: customAmts
+      customAmounts: customAmts,
+      paidBy: exp.paidBy || {}
     });
+  };
+
+  const togglePaidStatus = async (expenseId: string, member: string, currentStatus: boolean) => {
+    if (!isAdmin) return;
+    try {
+      const exp = expenses.find(e => e.id === expenseId);
+      if (!exp) return;
+      const newPaidBy = { ...(exp.paidBy || {}), [member]: !currentStatus };
+      await updateDoc(doc(db, 'expenses', expenseId), {
+        paidBy: newPaidBy,
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      handleError(err, OperationType.UPDATE, `expenses/${expenseId}/paidBy`);
+    }
   };
 
   const handleSaveEdit = async (id: string) => {
@@ -493,6 +561,7 @@ export default function App() {
         date: editForm.date,
         split: finalSplit,
         shares: finalShares,
+        paidBy: editForm.paidBy,
         updatedAt: serverTimestamp()
       });
       setEditingId(null);
@@ -581,6 +650,24 @@ export default function App() {
 
   const totalMonthlySpend = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <motion.div 
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
+          ></motion.div>
+          <div className="flex flex-col items-center">
+             <p className="text-slate-400 font-black uppercase tracking-widest text-[10px] animate-pulse">Đang xác thực hệ thống...</p>
+             <p className="text-slate-300 text-[8px] mt-2 font-medium">Kiểm tra thông tin tài khoản và phân quyền</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loading && !localStorage.getItem('lazaro_expenses')) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
@@ -668,7 +755,7 @@ export default function App() {
     );
   }
 
-  if (!accountCode) {
+  if (!accountCode || !isVerified) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
         <motion.div 
@@ -718,8 +805,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 md:p-8 p-4 font-sans selection:bg-blue-100">
-      <div className="max-w-7xl mx-auto space-y-8">
+    <div className="min-h-screen bg-slate-50 text-slate-900 md:p-8 p-4 font-sans selection:bg-blue-100">
+      <div className="max-w-screen-xl mx-auto space-y-8">
         
         {/* Global Error Display */}
         <AnimatePresence>
@@ -733,7 +820,7 @@ export default function App() {
               <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-center justify-between gap-4 mb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-rose-100 text-rose-600 rounded-lg">
-                    <X size={18} />
+                    <X size={16} />
                   </div>
                   <div className="flex flex-col">
                     <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest leading-none mb-1">Lỗi hệ thống</p>
@@ -744,7 +831,7 @@ export default function App() {
                   onClick={() => setGlobalError(null)}
                   className="p-2 text-rose-300 hover:text-rose-500 transition-all cursor-pointer"
                 >
-                  <X size={20} />
+                  <X size={18} />
                 </button>
               </div>
             </motion.div>
@@ -752,183 +839,212 @@ export default function App() {
         </AnimatePresence>
 
         {/* Header Section */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-               <input 
-                 value={title}
-                 readOnly={!isAdmin}
-                 onChange={(e) => updateSettings({ title: e.target.value })}
-                 className={`text-3xl md:text-4xl font-extrabold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0 ${!isAdmin ? 'cursor-default' : ''}`}
-               />
-               <div className="flex items-center gap-1">
-                 {isAdmin && (
-                   <button 
-                     onClick={() => setShowAdminPanel(true)}
-                     className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all cursor-pointer"
-                     title="Quản lý tài khoản"
-                   >
-                     <UserCog size={18} />
-                   </button>
-                 )}
-                 <button 
-                   onClick={handleLogout}
-                   className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
-                   title="Thoát"
-                 >
-                   <LogOut size={18} />
-                 </button>
-               </div>
-            </div>
-            <p className="text-slate-500 font-medium flex items-center gap-2">
-              <Calendar size={16} />
-              Quản lý chi tiêu nhà LazaroHome theo từng tháng
-            </p>
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pb-4 border-b border-slate-200">
+          <div className="space-y-1.5 px-1">
+             <div className="flex items-center gap-4">
+                <input 
+                  value={title}
+                  readOnly={!isAdmin}
+                  onChange={(e) => updateSettings({ title: e.target.value })}
+                  className={`text-lg md:text-xl font-bold tracking-tight bg-transparent border-none p-0 outline-none focus:ring-0 text-slate-900 ${!isAdmin ? 'cursor-default' : ''}`}
+                />
+                <div className="flex items-center gap-1.5">
+                  {isAdmin && (
+                    <button 
+                      onClick={() => setShowAdminPanel(true)}
+                      className="p-2.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all cursor-pointer"
+                      title="Quản lý"
+                    >
+                      <UserCog size={18} />
+                    </button>
+                  )}
+                  <button 
+                    onClick={handleLogout}
+                    className="p-2.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
+                    title="Thoát"
+                  >
+                    <LogOut size={18} />
+                  </button>
+                </div>
+             </div>
+             <p className="text-slate-500 font-medium text-sm flex items-center gap-2">
+               <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+               Quản lý thu chi phòng trọ
+             </p>
           </div>
           
-          <div className="flex items-center gap-3">
-             <div className="bg-white px-4 py-2 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-3 h-14">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Tháng</span>
+          <div className="flex flex-wrap items-center gap-3">
+             <div className="bg-white px-4 py-2 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4 h-12">
+                <Calendar size={16} className="text-slate-400" />
                 <input 
                   type="month"
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="font-bold text-blue-600 bg-transparent outline-none cursor-pointer"
+                  className="font-bold text-sm text-blue-600 bg-transparent outline-none cursor-pointer"
                 />
              </div>
              <button 
                 onClick={handleExportCSV}
-                className="h-14 aspect-square md:aspect-auto md:px-6 bg-slate-900 text-white rounded-2xl flex items-center justify-center gap-2 hover:bg-slate-800 transition-all shadow-lg shadow-slate-200 cursor-pointer"
+                className="h-12 px-5 bg-slate-900 text-white rounded-2xl flex items-center justify-center gap-2 hover:bg-slate-800 transition-all font-bold text-sm cursor-pointer"
              >
-                <Download size={20} />
-                <span className="hidden md:inline font-bold">Xuất CSV</span>
+                <Download size={18} />
+                <span>Xuất CSV</span>
              </button>
           </div>
         </div>
 
         {/* Quick Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Tổng chi tháng</span>
-                <div className="p-2 bg-blue-50 text-blue-600 rounded-xl"><Calculator size={20} /></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+           <div className="bento-card relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-6 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity">
+                <Calculator size={80} />
               </div>
-              <div className="text-3xl font-black text-slate-900">{formatMoney(totalMonthlySpend)}</div>
+              <p className="type-label">Tổng chi tháng</p>
+              <div className="text-2xl font-black text-slate-900 tracking-tight">{formatMoney(totalMonthlySpend)}</div>
+              <div className="mt-3 flex items-center gap-2 text-[10px] font-bold text-slate-400">
+                <Calendar size={12} />
+                Tháng {selectedMonth.split('-')[1]} năm {selectedMonth.split('-')[0]}
+              </div>
            </div>
            
-           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">Thủ quỹ mặc định</span>
-                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Users size={20} /></div>
+           <div className="bento-card relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-6 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity">
+                <Wallet size={80} />
               </div>
-              <select 
-                value={defaultPayer} 
-                disabled={!isAdmin}
-                onChange={e => updateSettings({ defaultPayer: e.target.value })}
-                className={`text-lg font-bold text-slate-900 bg-transparent outline-none w-full ${!isAdmin ? 'cursor-default' : 'cursor-pointer'}`}
-              >
-                {members.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
+              <p className="type-label">Thủ quỹ nhận tiền</p>
+              <div className="relative">
+                 <select 
+                   value={defaultPayer} 
+                   disabled={!isAdmin}
+                   onChange={e => updateSettings({ defaultPayer: e.target.value })}
+                   className={`text-xl font-black text-slate-900 bg-transparent outline-none w-full appearance-none pr-8 ${!isAdmin ? 'cursor-default' : 'cursor-pointer hover:text-blue-600'}`}
+                 >
+                   {members.map(m => <option key={m} value={m}>{m}</option>)}
+                 </select>
+                 <ChevronRight size={16} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none rotate-90" />
+              </div>
+              <div className="mt-3 flex items-center gap-2 text-[10px] font-bold text-slate-400">
+                <Users size={12} />
+                {members.length} thành viên tham gia
+              </div>
+           </div>
+
+           <div className="bento-card md:col-span-2 lg:col-span-1 bg-blue-600 border-none group">
+              <div className="flex flex-col h-full justify-between">
+                <div>
+                  <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest mb-1">Trạng thái nhà</p>
+                  <p className="text-white font-bold text-lg">Đang hoạt động tốt</p>
+                </div>
+                <div className="mt-4 flex items-center justify-between">
+                   <div className="flex -space-x-2">
+                      {members.slice(0, 4).map((m, i) => (
+                        <div key={m} className={`w-8 h-8 rounded-full border-2 border-blue-600 flex items-center justify-center text-[10px] font-black text-white ${['bg-indigo-500', 'bg-emerald-500', 'bg-rose-500', 'bg-amber-500'][i % 4]}`}>
+                          {m[0]}
+                        </div>
+                      ))}
+                      {members.length > 4 && (
+                        <div className="w-8 h-8 rounded-full border-2 border-blue-600 bg-slate-800 flex items-center justify-center text-[10px] font-black text-white">
+                          +{members.length - 4}
+                        </div>
+                      )}
+                   </div>
+                   <div className="p-2 bg-blue-500/30 text-blue-100 rounded-lg group-hover:rotate-12 transition-transform">
+                      <Receipt size={16} />
+                   </div>
+                </div>
+              </div>
            </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          <div className="xl:col-span-3 space-y-6">
+          <div className="lg:col-span-8 space-y-8">
             
             {/* Add Expense Form */}
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200"
+              className="bento-card"
             >
               <form onSubmit={handleAddExpense} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
                     <div className="md:col-span-12 relative">
-                      <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Nội dung chi tiêu</label>
-                      <input 
-                        placeholder="Mô tả khoản chi... (vd: Cơm trưa, Cơm tối, Tiền điện...)" 
-                        value={newExp.desc}
-                        onChange={e => {
-                          const val = capitalizeFirstLetter(e.target.value);
-                          setNewExp({...newExp, desc: val});
-                          setShowSuggestions(true);
-                        }}
-                        onFocus={() => setShowSuggestions(true)}
-                        onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold placeholder:text-slate-300 shadow-sm"
-                      />
-                      <AnimatePresence>
-                        {showSuggestions && (
-                          <motion.div 
-                            initial={{ opacity: 0, y: -10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -10 }}
-                            className="absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/50 overflow-hidden"
-                          >
-                            <div className="p-2 grid grid-cols-2 sm:grid-cols-3 gap-1">
-                              {suggestions
-                                .filter(s => s.toLowerCase().includes(newExp.desc.toLowerCase()))
-                                .map(s => (
-                                <button
-                                  key={s}
-                                  type="button"
-                                  onClick={() => {
-                                    setNewExp({...newExp, desc: capitalizeFirstLetter(s)});
-                                    setShowSuggestions(false);
-                                  }}
-                                  className="text-left px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all flex items-center justify-between group"
-                                >
-                                  <span>{s}</span>
-                                  <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all text-blue-400" />
-                                </button>
-                              ))}
-                              {newExp.desc && !suggestions.includes(newExp.desc.toLowerCase()) && (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    const newSugs = [...suggestions, newExp.desc.toLowerCase()];
-                                    setSuggestions(newSugs);
-                                    await updateSettings({ suggestions: newSugs });
-                                    setShowSuggestions(false);
-                                  }}
-                                  className="col-span-full mt-1 px-4 py-3 bg-blue-50 text-blue-600 text-xs font-black uppercase tracking-widest rounded-xl hover:bg-blue-100 transition-all flex items-center justify-center gap-2 border border-blue-100 border-dashed"
-                                >
-                                  <Plus size={16} />
-                                  Lưu "{newExp.desc}" vào danh sách gợi ý
-                                </button>
-                              )}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                      <p className="type-label">Nội dung chi tiêu</p>
+                      <div className="relative">
+                        <input 
+                          placeholder="Mô tả khoản chi... (Cơm trưa, điện nước...)" 
+                          value={newExp.desc}
+                          onChange={e => {
+                            const val = capitalizeFirstLetter(e.target.value);
+                            setNewExp({...newExp, desc: val});
+                            setShowSuggestions(true);
+                          }}
+                          onFocus={() => setShowSuggestions(true)}
+                          onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white transition-all outline-none text-sm font-bold placeholder:text-slate-300"
+                        />
+                        <AnimatePresence>
+                          {showSuggestions && (
+                            <motion.div 
+                              initial={{ opacity: 0, y: -10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -10 }}
+                              className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-[20px] shadow-xl overflow-hidden"
+                            >
+                              <div className="p-2 grid grid-cols-2 md:grid-cols-4 gap-1">
+                                {suggestions
+                                  .filter(s => s.toLowerCase().includes(newExp.desc.toLowerCase()))
+                                  .map(s => (
+                                  <button
+                                    key={s}
+                                    type="button"
+                                    onClick={() => {
+                                      setNewExp({...newExp, desc: capitalizeFirstLetter(s)});
+                                      setShowSuggestions(false);
+                                    }}
+                                    className="text-left px-3 py-2 text-[11px] font-bold text-slate-600 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all flex items-center justify-between group"
+                                  >
+                                    <span>{s}</span>
+                                    <ChevronRight size={12} className="opacity-0 group-hover:opacity-100 transition-all text-blue-400" />
+                                  </button>
+                                ))}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
                     </div>
-                  <div className="md:col-span-6">
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Số tiền (đ)</label>
-                    <input 
-                      type="number"
-                      placeholder="0"
-                      value={newExp.amount}
-                      onChange={e => setNewExp({...newExp, amount: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold shadow-sm"
-                    />
-                  </div>
-                  <div className="md:col-span-6">
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1 block mb-1.5">Người trả</label>
-                    <select 
-                      value={newExp.payer}
-                      onChange={e => setNewExp({...newExp, payer: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-2 focus:ring-blue-500 bg-white transition-all outline-none text-base font-bold cursor-pointer appearance-none shadow-sm"
-                    >
-                      {members.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </div>
+
+                    <div className="md:col-span-6">
+                      <p className="type-label">Số tiền (VNĐ)</p>
+                      <input 
+                        type="number"
+                        placeholder="0"
+                        value={newExp.amount}
+                        onChange={e => setNewExp({...newExp, amount: e.target.value})}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white transition-all outline-none text-sm font-black"
+                      />
+                    </div>
+                    
+                    <div className="md:col-span-6">
+                      <p className="type-label">Người trả tiền</p>
+                      <div className="relative">
+                        <select 
+                          value={newExp.payer}
+                          onChange={e => setNewExp({...newExp, payer: e.target.value})}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white transition-all outline-none text-sm font-bold cursor-pointer appearance-none"
+                        >
+                          {members.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                        <ChevronRight size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none rotate-90" />
+                      </div>
+                    </div>
                 </div>
 
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1 block">Chia tiền như thế nào?</label>
-                    <div className="flex bg-slate-100 p-1 rounded-xl">
+                    <p className="type-label mb-0">Chia sẻ chi phí</p>
+                    <div className="flex bg-slate-100 p-0.5 rounded-xl">
                        <button 
                          type="button"
                          onClick={() => setNewExp({...newExp, isCustom: false})}
@@ -1010,165 +1126,133 @@ export default function App() {
               </form>
             </motion.div>
 
-            {/* Desktop Table */}
-            <div className="bg-white rounded-[32px] shadow-sm border border-slate-200 overflow-hidden hidden md:block">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50/50">
-                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Ngày</th>
-                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest min-w-[200px]">Mô tả chi tiết</th>
-                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Tổng tiền</th>
-                      {members.map(m => (
-                        <th key={m} className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">{m}</th>
-                      ))}
-                      <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    <AnimatePresence mode="popLayout">
-                      {filteredExpenses.map((exp) => {
-                        const share = exp.amount / exp.split.length;
-                        const isEditing = editingId === exp.id;
-                        return (
+            {/* History List */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between px-2">
+                <h3 className="type-label mb-0">Lịch sử chi tiêu</h3>
+                <div className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full">
+                  {filteredExpenses.length} Giao dịch
+                </div>
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="bg-white rounded-[32px] shadow-sm border border-slate-200 overflow-hidden hidden md:block">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50/50 border-b border-slate-100">
+                        <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Ngày</th>
+                        <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Nội dung</th>
+                        <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Tổng tiền</th>
+                        <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Người trả</th>
+                        <th className="py-5 px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      <AnimatePresence mode="popLayout">
+                        {filteredExpenses.map((exp) => (
                           <motion.tr 
                             layout
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0, x: -20 }}
                             key={exp.id} 
-                            className={`group transition-all font-medium ${isEditing ? 'bg-blue-50/30' : 'hover:bg-slate-50/50'}`}
+                            className="group hover:bg-slate-50/30 transition-all font-medium"
                           >
-                            <td className="py-4 px-6 text-slate-400 text-xs font-bold">
+                            <td className="py-4 px-6 text-slate-400 text-xs font-bold font-mono">
                                {exp.date.split('-').slice(2).join('/')}/{exp.date.split('-')[1]}
                             </td>
                             <td className="py-4 px-6">
-                               <div className="flex flex-col gap-0.5">
+                               <div className="flex flex-col">
                                   <span className="text-slate-900 font-bold">{exp.desc}</span>
-                                  <div className="flex items-center gap-2">
-                                     <span className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">Trả bởi {exp.payer}</span>
-                                     {exp.shares ? (
-                                       <span className="text-[10px] text-emerald-500 font-black tracking-tighter bg-emerald-50 px-1 rounded">CHIA TÙY CHỈNH</span>
-                                     ) : exp.split.length < members.length && (
-                                       <span className="text-[10px] text-blue-500 font-black tracking-tighter bg-blue-50 px-1 rounded">CHIA {exp.split.length} TV</span>
-                                     )}
-                                  </div>
+                                  <span className="text-[10px] text-slate-400 font-black uppercase">Chia {exp.split.length} TV</span>
                                </div>
                             </td>
                             <td className="py-4 px-6 text-right font-black text-slate-900">
                                {formatNumber(exp.amount)}
                             </td>
-                            {members.map(m => (
-                              <td 
-                                key={m} 
-                                className={`py-4 px-6 text-center transition-all ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'text-blue-600 font-black' : 'text-slate-200'}`}
-                              >
-                                {(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? formatNumber(exp.shares ? exp.shares[m] : share) : "-"}
-                              </td>
-                            ))}
-                            <td className="py-4 px-6 text-center">
+                            <td className="py-4 px-6">
+                                <div className="flex justify-center">
+                                  <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase ring-1 ring-blue-100">
+                                    {exp.payer}
+                                  </span>
+                                </div>
+                            </td>
+                            <td className="py-4 px-6">
                                <div className="flex items-center justify-center gap-1">
                                   {isAdmin && (
                                     <>
                                       <button 
                                         onClick={() => startEditing(exp)}
-                                        className="text-slate-300 hover:text-blue-600 p-2 rounded-xl hover:bg-blue-50 transition-all cursor-pointer md:opacity-0 group-hover:opacity-100"
-                                        title="Sửa"
+                                        className="text-slate-300 hover:text-blue-600 p-2 rounded-xl hover:bg-blue-50 transition-all opacity-0 group-hover:opacity-100"
                                       >
-                                        <Pencil size={16} />
+                                        <Pencil size={14} />
                                       </button>
                                       <button 
                                         onClick={() => handleDeleteExpense(exp.id)}
-                                        className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all cursor-pointer md:opacity-0 group-hover:opacity-100"
-                                        title="Xóa"
+                                        className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
                                       >
-                                        <Trash2 size={16} />
+                                        <Trash2 size={14} />
                                       </button>
                                     </>
                                   )}
                                </div>
                             </td>
                           </motion.tr>
-                        )
-                      })}
-                    </AnimatePresence>
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-900 text-white font-black">
-                       <td colSpan={2} className="py-5 px-6 text-right uppercase tracking-[0.2em] text-[10px]">Cộng dồn tháng này</td>
-                       <td className="py-5 px-6 text-right text-lg">{formatNumber(totalMonthlySpend)}</td>
-                       {totalRow.map((total, idx) => (
-                         <td key={idx} className="py-5 px-6 text-center text-blue-400">{formatNumber(total)}</td>
-                       ))}
-                       <td></td>
-                    </tr>
-                  </tfoot>
-                </table>
+                        ))}
+                      </AnimatePresence>
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
 
-            {/* Mobile Cards View */}
-            <div className="md:hidden space-y-4">
-               <AnimatePresence mode="popLayout">
-                  {filteredExpenses.map((exp) => {
-                    const share = exp.amount / exp.split.length;
-                    const isEditing = editingId === exp.id;
-                    return (
-                        <motion.div 
-                          initial={{ opacity: 0, scale: 0.95 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          key={exp.id} 
-                          className="bg-white p-6 rounded-[32px] shadow-sm border border-slate-200 transition-all relative"
-                        >
-                           <div className="absolute top-4 right-4 flex items-center gap-1">
-                              {isAdmin && (
-                                <>
-                                  <button 
-                                    onClick={() => startEditing(exp)}
-                                    className="text-slate-300 p-2 hover:text-blue-600 transition-all cursor-pointer"
-                                  >
-                                    <Pencil size={16} />
-                                  </button>
-                                  <button 
-                                    onClick={() => handleDeleteExpense(exp.id)}
-                                    className="text-slate-300 p-2 hover:text-red-500 transition-all cursor-pointer"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
-                                </>
-                              )}
-                           </div>
-                           <div className="flex flex-col gap-6">
+              {/* Mobile List View */}
+              <div className="md:hidden space-y-3">
+                 <AnimatePresence mode="popLayout">
+                    {filteredExpenses.map((exp) => (
+                         <motion.div 
+                           layout
+                           initial={{ opacity: 0, scale: 0.95 }}
+                           animate={{ opacity: 1, scale: 1 }}
+                           exit={{ opacity: 0, scale: 0.95 }}
+                           key={exp.id} 
+                           className="bg-white p-5 rounded-[28px] shadow-sm border border-slate-200 space-y-4"
+                         >
+                            <div className="flex items-center justify-between">
+                               <span className="text-[10px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded-lg font-mono">
+                                 {exp.date.split('-').reverse().join('/')}
+                               </span>
+                               <div className="flex items-center gap-2">
+                                  {isAdmin && (
+                                    <>
+                                      <button onClick={() => startEditing(exp)} className="text-slate-300 p-2"><Pencil size={14} /></button>
+                                      <button onClick={() => handleDeleteExpense(exp.id)} className="text-slate-300 p-2"><Trash2 size={14} /></button>
+                                    </>
+                                  )}
+                               </div>
+                            </div>
+                            <div className="flex justify-between items-start">
                                <div>
-                                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{exp.date.split('-').reverse().join('/')}</div>
-                                  <div className="text-xl font-black text-slate-900 leading-tight">{exp.desc}</div>
-                                  <div className="flex items-center gap-2 mt-2">
-                                     <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black uppercase">{exp.payer} chi</span>
+                                  <h4 className="text-base font-bold text-slate-900 leading-tight mb-1">{exp.desc}</h4>
+                                  <div className="flex items-center gap-2">
+                                     <span className="text-[9px] font-black text-blue-500 uppercase tracking-wider">{exp.payer} chi</span>
+                                     <span className="w-1 h-1 bg-slate-200 rounded-full" />
+                                     <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Chia {exp.split.length} người</span>
                                   </div>
                                </div>
-                               <div className="text-2xl font-black text-slate-900">{formatMoney(exp.amount)}</div>
-                               
-                               <div className="space-y-3 pt-4 border-t border-slate-50">
-                                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Chia sẻ cho:</div>
-                                 <div className="grid grid-cols-2 gap-2">
-                                    {members.map(m => (
-                                       <div key={m} className="relative">
-                                          <div className={`w-full px-3 py-2 rounded-2xl text-[10px] font-black flex justify-between items-center transition-all ${(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) ? 'bg-slate-50 text-slate-900 border-2 border-slate-100' : 'text-slate-200 border-2 border-slate-50/50'}`}>
-                                            <span>{m}</span>
-                                            {(exp.shares ? !!exp.shares[m] : exp.split.includes(m)) && (
-                                              <span className="text-blue-600">{formatMoney(exp.shares ? exp.shares[m] : share)}</span>
-                                            )}
-                                          </div>
-                                       </div>
-                                    ))}
-                                 </div>
-                               </div>
-                           </div>
-                        </motion.div>
-                    )
-                  })}
-               </AnimatePresence>
+                               <div className="text-lg font-black text-slate-900">{formatMoney(exp.amount)}</div>
+                            </div>
+                         </motion.div>
+                    ))}
+                 </AnimatePresence>
+              </div>
+
+              {filteredExpenses.length === 0 && (
+                 <div className="bg-white py-16 rounded-[32px] border-2 border-slate-100 border-dashed flex flex-col items-center justify-center text-slate-300 space-y-4">
+                    <Receipt size={48} strokeWidth={1.5} className="opacity-20" />
+                    <p className="font-black uppercase tracking-widest text-[10px]">Chưa có dữ liệu chi tiêu</p>
+                 </div>
+              )}
             </div>
 
             {filteredExpenses.length === 0 && (
@@ -1307,17 +1391,16 @@ export default function App() {
                            <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
                               {members.map(m => (
                                 <div key={m} className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${!editForm.isCustom && editForm.split.includes(m) ? 'bg-blue-50 border-blue-100' : 'bg-white border-slate-100'}`}>
-                                   <button 
-                                      type="button"
-                                      disabled={editForm.isCustom}
-                                      onClick={() => toggleSplitEdit(m)}
-                                      className={`flex-1 flex items-center gap-3 text-left ${editForm.isCustom ? 'cursor-default' : 'cursor-pointer'}`}
-                                   >
-                                      <div className={`w-5 h-5 rounded-md flex items-center justify-center transition-all ${editForm.split.includes(m) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-transparent'}`}>
-                                         <Check size={14} />
-                                      </div>
-                                      <span className={`text-sm font-black ${editForm.split.includes(m) ? 'text-slate-900' : 'text-slate-400'}`}>{m}</span>
-                                   </button>
+                                   <div className="flex items-center gap-3 flex-1 overflow-hidden">
+                                     <button 
+                                        type="button"
+                                        disabled={editForm.isCustom}
+                                        onClick={() => toggleSplitEdit(m)}
+                                        className={`flex-1 flex items-center gap-3 text-left ${editForm.isCustom ? 'cursor-default' : 'cursor-pointer'} truncate`}
+                                     >
+                                         <span className={`text-sm font-black truncate ${editForm.split.includes(m) ? 'text-blue-600' : 'text-slate-400 opacity-60'}`}>{m}</span>
+                                     </button>
+                                   </div>
 
                                    {editForm.isCustom && (
                                      <div className="relative">
@@ -1350,9 +1433,9 @@ export default function App() {
                              <div className="pt-2 flex flex-col gap-1">
                                <div className="flex justify-between items-center text-[10px] font-black">
                                   <span className="text-slate-400 uppercase">Tổng chia</span>
-                                  <span className="text-slate-900">{formatMoney(Object.values(editForm.customAmounts).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0))}</span>
+                                  <span className="text-slate-900">{formatMoney((Object.values(editForm.customAmounts) as string[]).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0))}</span>
                                </div>
-                               {Math.abs(Object.values(editForm.customAmounts).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0) - (parseFloat(editForm.amount) || 0)) > 1 && (
+                               {Math.abs((Object.values(editForm.customAmounts) as string[]).reduce((acc: number, val: string) => acc + (parseFloat(val) || 0), 0) - (parseFloat(editForm.amount) || 0)) > 1 && (
                                  <div className="bg-rose-50 text-rose-500 p-2 rounded-lg text-[9px] font-bold text-center">Tiền chia chưa khớp tổng chi</div>
                                )}
                              </div>
@@ -1472,119 +1555,129 @@ export default function App() {
 
           </div>
 
-          {/* Right Column: Settings & Settlement */}
-          <div className="space-y-8">
+          {/* Right Column: Settlement & Members */}
+          <div className="lg:col-span-4 space-y-6">
             
-            {/* Setting: Members */}
-            <div className="bg-white p-7 rounded-[32px] shadow-sm border border-slate-200 space-y-6">
-               <div className="flex items-center justify-between">
-                  <h3 className="font-black text-slate-900 uppercase text-[10px] tracking-widest">Thành viên nhà</h3>
-                  {isAdmin && (
-                    <button onClick={handleAddMember} className="bg-slate-50 hover:bg-slate-100 p-2.5 rounded-2xl transition-all cursor-pointer">
-                      <UserPlus size={20} className="text-slate-600" />
-                    </button>
-                  )}
-               </div>
-               <div className="space-y-3">
-                  {members.map((m, idx) => (
-                    <div key={idx} className="flex items-center gap-2 group">
-                       <input 
-                        value={m}
-                        readOnly={!isAdmin}
-                        onChange={e => handleNameChange(idx, e.target.value)}
-                        className={`bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black w-full focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm ${!isAdmin ? 'cursor-default' : ''}`}
-                       />
-                       {isAdmin && (
-                         <button onClick={() => handleRemoveMember(m)} className="text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all cursor-pointer p-1">
-                          <UserMinus size={18} />
-                         </button>
-                       )}
-                    </div>
-                  ))}
-               </div>
-            </div>
+            {/* Settlement Card */}
+            <div className="bg-slate-900 rounded-[32px] p-6 text-white shadow-2xl shadow-blue-900/20 relative overflow-hidden">
+               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl -mr-16 -mt-16" />
+               <div className="relative z-10 space-y-6">
+                  <div>
+                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-1">Kết toán giao dịch</h3>
+                    <div className="text-2xl font-black tracking-tight">Tháng {selectedMonth.split('-')[1]}</div>
+                  </div>
 
-            {/* Security Setting (Admin Only) */}
-            {isAdmin && (
-              <div className="bg-white p-7 rounded-[32px] shadow-sm border border-slate-200 space-y-6">
-                 <div className="flex items-center justify-between">
-                    <h3 className="font-black text-slate-900 uppercase text-[10px] tracking-widest">Bảo mật</h3>
-                    <div className="p-2 bg-slate-50 text-slate-400 rounded-xl"><UserCog size={18} /></div>
-                 </div>
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã xác thực bảng (passcode)</label>
-                   <input 
-                    type="password"
-                    value={passcode}
-                    onChange={e => updateSettings({ passcode: e.target.value })}
-                    className="bg-slate-50 border-2 border-transparent rounded-2xl px-5 py-3 text-sm font-black w-full focus:bg-white focus:border-blue-100 outline-none transition-all shadow-sm"
-                    placeholder="Nhập mã mới..."
-                   />
-                 </div>
-              </div>
-            )}
+                  <div className="space-y-3">
+                    {members.map(m => {
+                      const bal = balances[m];
+                      const isTreasurer = m === defaultPayer;
+                      const amount = Math.abs(Math.round(bal.net));
+                      const isSettled = settlements[m];
+                      if (isTreasurer) return null;
 
-            {/* Settlement Summary */}
-            <div className="bg-slate-900 text-white rounded-[40px] p-8 shadow-2xl shadow-blue-900/10 space-y-10 relative overflow-hidden">
-               {/* Decorative Gradient */}
-               <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/20 rounded-full blur-[80px] -mr-24 -mt-24"></div>
-               <div className="absolute bottom-0 left-0 w-32 h-32 bg-purple-500/10 rounded-full blur-[60px] -ml-16 -mb-16"></div>
-               
-               <div className="space-y-2 relative">
-                  <h3 className="font-black uppercase text-[10px] tracking-[0.3em] text-slate-500">Thanh toán cuối tháng</h3>
-                  <div className="text-4xl font-black tracking-tighter">THÁNG {selectedMonth.split('-')[1]}</div>
-               </div>
-
-               <div className="space-y-6 relative">
-                  {members.map(m => {
-                    const bal = balances[m];
-                    const isTreasurer = m === defaultPayer;
-                    const amount = Math.abs(Math.round(bal.net));
-                    
-                    if (isTreasurer) return null;
-
-                    return (
-                      <div key={m} className="flex items-center justify-between group">
-                         <div className="flex flex-col">
-                            <span className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1">{m}</span>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-600 font-bold">
-                               <span>Dùng: {formatNumber(bal.consumed)}</span>
-                               <span>•</span>
-                               <span>Chi: {formatNumber(bal.paid)}</span>
-                            </div>
-                         </div>
-                         <div className="flex items-center gap-4">
-                            <div className="flex flex-col items-end">
-                               <span className={`${bal.net >= 0 ? 'text-blue-400' : 'text-rose-400'} font-black text-2xl tracking-tight leading-none`}>
-                                 {formatNumber(amount)}
-                               </span>
-                               <span className={`text-[8px] font-black uppercase tracking-widest mt-1.5 ${bal.net >= 0 ? 'text-blue-500/50' : 'text-rose-500/50'}`}>
-                                 {bal.net >= 0 ? 'Cần chuyển' : 'Thừa chi'}
-                               </span>
-                            </div>
-                            <div className="h-11 w-11 bg-slate-800/50 border border-slate-700/50 rounded-2xl flex items-center justify-center text-blue-400 group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-500 group-hover:rotate-45 transition-all duration-500 cursor-default shadow-sm shadow-black/20">
-                               <ArrowRight size={20} />
-                            </div>
-                         </div>
-                      </div>
-                    )
-                  })}
-
-                  <div className="pt-8 border-t border-slate-800/50 mt-10">
-                     <div className="flex items-center justify-between">
-                        <div>
-                           <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Chuyển cho thủ quỹ</span>
-                           <div className="text-xl font-black text-white">{defaultPayer}</div>
+                      return (
+                        <div 
+                          key={m} 
+                          onClick={() => {
+                            if (isAdmin) {
+                              toggleSettlement(m);
+                            } else {
+                              setGlobalError("Chỉ quản trị viên mới có quyền kết toán.");
+                              setTimeout(() => setGlobalError(null), 3000);
+                            }
+                          }}
+                          className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all duration-300 relative group/item ${isAdmin ? 'cursor-pointer hover:bg-white/10 hover:border-white/20 hover:scale-[1.02] active:scale-[0.98]' : ''} ${isSettled ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-white/5 border-transparent'}`}
+                        >
+                           {isSettled && (
+                             <motion.div 
+                               initial={{ scale: 0 }}
+                               animate={{ scale: 1 }}
+                               className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center shadow-lg"
+                             >
+                               <Check size={8} className="text-white" strokeWidth={4} />
+                             </motion.div>
+                           )}
+                           <div className="flex items-center gap-3">
+                              <div className="flex flex-col">
+                                 <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${isSettled ? 'text-emerald-400' : 'text-slate-400 group-hover/item:text-slate-200'}`}>{m}</span>
+                                 <span className="text-[8px] font-black text-slate-600 uppercase">Tiêu {formatNumber(bal.consumed)}</span>
+                              </div>
+                           </div>
+                           <div className="text-right">
+                              <p className={`text-sm font-black transition-colors ${isSettled ? 'text-emerald-400' : (bal.net >= 0 ? 'text-blue-400 group-hover/item:text-blue-300' : 'text-rose-400 group-hover/item:text-rose-300')}`}>
+                                {formatNumber(amount)}
+                              </p>
+                              <p className={`text-[8px] font-bold uppercase tracking-tighter ${isSettled ? 'text-emerald-500/40' : 'text-slate-500'}`}>
+                                {isSettled ? 'Đã thu' : (bal.net >= 0 ? 'Phải nộp' : 'Thừa')}
+                              </p>
+                           </div>
                         </div>
-                        <div className="p-4 bg-blue-600 text-white rounded-3xl shadow-xl shadow-blue-900/40 rotate-12 transition-transform hover:rotate-0"><Wallet size={28} /></div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-6 border-t border-white/5">
+                     <div className="flex items-center justify-between bg-white/5 p-4 rounded-2xl">
+                        <div>
+                           <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Thủ quỹ nhận</p>
+                           <p className="text-lg font-black text-white">{defaultPayer}</p>
+                        </div>
+                        <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+                           <Wallet size={20} />
+                        </div>
                      </div>
                   </div>
                </div>
             </div>
 
-            <div className="bg-blue-50 p-6 rounded-[32px] border-2 border-blue-100 border-dashed text-center">
-               <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest leading-relaxed">
-                 Hệ thống tự động tính toán<br/>dựa trên người thanh toán mặc định
+            {/* Members Card */}
+            <div className="bento-card space-y-6">
+                <div className="flex items-center justify-between">
+                   <h3 className="type-label mb-0">Thành viên</h3>
+                   {isAdmin && (
+                     <button onClick={handleAddMember} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-xl transition-all">
+                       <UserPlus size={18} />
+                     </button>
+                   )}
+                </div>
+                <div className="space-y-3">
+                   {members.map((m, idx) => (
+                     <div key={idx} className="flex items-center gap-2 group">
+                        <input 
+                         value={m}
+                         readOnly={!isAdmin}
+                         onChange={e => handleNameChange(idx, e.target.value)}
+                         className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold focus:bg-white focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
+                        />
+                        {isAdmin && (
+                          <button onClick={() => handleRemoveMember(m)} className="text-slate-300 hover:text-red-500 p-2 transition-all opacity-0 group-hover:opacity-100">
+                           <UserMinus size={16} />
+                          </button>
+                        )}
+                     </div>
+                   ))}
+                </div>
+
+                {isAdmin && (
+                  <div className="pt-6 border-t border-slate-100 space-y-4">
+                     <div className="flex items-center gap-2">
+                        <Shield className="text-slate-400" size={14} />
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Bảo mật bảng</h4>
+                     </div>
+                     <input 
+                      type="password"
+                      value={passcode}
+                      onChange={e => updateSettings({ passcode: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold focus:bg-white focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
+                      placeholder="Passcode..."
+                     />
+                  </div>
+                )}
+            </div>
+
+            <div className="p-6 text-center">
+               <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.3em] leading-relaxed">
+                 LazaroHome Admin System<br/>Build 2.0.4 &bull; 2024
                </p>
             </div>
 

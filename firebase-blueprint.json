@@ -62,6 +62,13 @@
     "settings/house": {
       "schema": "AppSettings",
       "description": "Global house settings"
+    },
+    "settlements": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": { "type": "boolean" }
+      },
+      "description": "Monthly settlement status. Doc ID is YYYY-MM. Fields are member names."
     }
   }
 }
