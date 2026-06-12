@@ -1184,13 +1184,13 @@ export default function App() {
                                     <>
                                       <button 
                                         onClick={() => startEditing(exp)}
-                                        className="text-slate-300 hover:text-blue-600 p-2 rounded-xl hover:bg-blue-50 transition-all opacity-0 group-hover:opacity-100"
+                                        className="text-slate-500 hover:text-blue-600 p-2 rounded-xl bg-slate-50 border border-slate-100 hover:bg-blue-50 transition-all shadow-sm"
                                       >
                                         <Pencil size={14} />
                                       </button>
                                       <button 
                                         onClick={() => handleDeleteExpense(exp.id)}
-                                        className="text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+                                        className="text-red-500 hover:text-red-600 p-2 rounded-xl bg-red-50 border border-red-100 hover:bg-red-100 transition-all shadow-sm font-medium"
                                       >
                                         <Trash2 size={14} />
                                       </button>
@@ -1225,8 +1225,20 @@ export default function App() {
                                <div className="flex items-center gap-2">
                                   {isAdmin && (
                                     <>
-                                      <button onClick={() => startEditing(exp)} className="text-slate-300 p-2"><Pencil size={14} /></button>
-                                      <button onClick={() => handleDeleteExpense(exp.id)} className="text-slate-300 p-2"><Trash2 size={14} /></button>
+                                      <button 
+                                        onClick={() => startEditing(exp)} 
+                                        className="text-slate-500 hover:text-blue-600 p-2 rounded-xl bg-slate-50 border border-slate-100 hover:bg-blue-50 transition-all shadow-sm"
+                                        title="Sửa"
+                                      >
+                                        <Pencil size={14} />
+                                      </button>
+                                      <button 
+                                        onClick={() => handleDeleteExpense(exp.id)} 
+                                        className="text-red-500 hover:text-red-600 p-2 rounded-xl bg-red-50 border border-red-100 hover:bg-red-100 transition-all shadow-sm font-medium"
+                                        title="Xoá"
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
                                     </>
                                   )}
                                </div>
@@ -1538,9 +1550,10 @@ export default function App() {
                               {acc.id !== 'tan.nd.05' && (
                                 <button 
                                   onClick={() => deleteAccount(acc.id)}
-                                  className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                                  className="p-2 text-red-500 hover:text-red-600 bg-red-50 border border-red-100 hover:bg-red-100 rounded-xl transition-all shadow-sm font-medium"
+                                  title="Xoá tài khoản"
                                 >
-                                  <Trash2 size={18} />
+                                  <Trash2 size={16} />
                                 </button>
                               )}
                             </div>
@@ -1650,7 +1663,11 @@ export default function App() {
                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold focus:bg-white focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
                         />
                         {isAdmin && (
-                          <button onClick={() => handleRemoveMember(m)} className="text-slate-300 hover:text-red-500 p-2 transition-all opacity-0 group-hover:opacity-100">
+                          <button 
+                            onClick={() => handleRemoveMember(m)} 
+                            className="text-red-500 hover:text-red-600 p-2 rounded-xl bg-red-50 border border-red-100 hover:bg-red-100 transition-all shadow-sm font-medium"
+                            title="Xoá thành viên"
+                          >
                            <UserMinus size={16} />
                           </button>
                         )}
